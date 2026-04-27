@@ -1,0 +1,424 @@
+using System;
+using System.Linq;
+using cAlgo.API;
+using cAlgo.API.Indicators;
+using cAlgo.API.Internals;
+
+namespace cAlgo.Robots
+{
+    [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
+    public class LondonFixBreakoutBot : Robot
+    {
+        // ------------------------------------------------------------
+        // PARAMETERS
+        // ------------------------------------------------------------
+
+        [Parameter("Bot Label", DefaultValue = "LondonFixBreakout")]
+        public string BotLabel { get; set; }
+
+        [Parameter("Enable Longs", DefaultValue = true)]
+        public bool EnableLongs { get; set; }
+
+        [Parameter("Enable Shorts", DefaultValue = true)]
+        public bool EnableShorts { get; set; }
+
+        [Parameter("Skip Fridays", DefaultValue = true)]
+        public bool SkipFridays { get; set; }
+
+        [Parameter("Month-End Only", DefaultValue = false)]
+        public bool MonthEndOnly { get; set; }
+
+        [Parameter("Last Business Days of Month", DefaultValue = 5, MinValue = 1, MaxValue = 10)]
+        public int LastBusinessDaysOfMonth { get; set; }
+
+        [Parameter("One Trade Per London Day", DefaultValue = true)]
+        public bool OneTradePerLondonDay { get; set; }
+
+        [Parameter("Use Risk % Sizing", DefaultValue = false)]
+        public bool UseRiskPercentSizing { get; set; }
+
+        [Parameter("Risk %", DefaultValue = 0.50, MinValue = 0.01, Step = 0.01)]
+        public double RiskPercent { get; set; }
+
+        [Parameter("Fixed Volume (Lots)", DefaultValue = 0.01, MinValue = 0.01, Step = 0.01)]
+        public double FixedVolumeLots { get; set; }
+
+        [Parameter("Setup Start (HH:mm London)", DefaultValue = "14:30")]
+        public string SetupStartText { get; set; }
+
+        [Parameter("Setup End (HH:mm London)", DefaultValue = "15:45")]
+        public string SetupEndText { get; set; }
+
+        [Parameter("Entry End (HH:mm London)", DefaultValue = "16:05")]
+        public string EntryEndText { get; set; }
+
+        [Parameter("Force Exit (HH:mm London)", DefaultValue = "16:45")]
+        public string ForceExitText { get; set; }
+
+        [Parameter("ATR Period", DefaultValue = 14, MinValue = 2)]
+        public int AtrPeriod { get; set; }
+
+        [Parameter("Breakout Buffer ATR Mult", DefaultValue = 0.10, MinValue = 0.0, Step = 0.01)]
+        public double BreakoutBufferAtrMult { get; set; }
+
+        [Parameter("Min Box ATR Mult", DefaultValue = 0.50, MinValue = 0.0, Step = 0.05)]
+        public double MinBoxAtrMult { get; set; }
+
+        [Parameter("Max Box ATR Mult", DefaultValue = 1.50, MinValue = 0.0, Step = 0.05)]
+        public double MaxBoxAtrMult { get; set; }
+
+        [Parameter("Stop = Box Mult", DefaultValue = 0.75, MinValue = 0.10, Step = 0.05)]
+        public double StopBoxMult { get; set; }
+
+        [Parameter("Take Profit R Multiple", DefaultValue = 1.50, MinValue = 0.10, Step = 0.10)]
+        public double TakeProfitR { get; set; }
+
+        [Parameter("Max Spread (pips)", DefaultValue = 5.0, MinValue = 0.0, Step = 0.1)]
+        public double MaxSpreadPips { get; set; }
+
+        [Parameter("Use EMA Trend Filter", DefaultValue = false)]
+        public bool UseTrendFilter { get; set; }
+
+        [Parameter("EMA Period", DefaultValue = 55, MinValue = 2)]
+        public int EmaPeriod { get; set; }
+
+        [Parameter("Close Must Be Beyond Buffer", DefaultValue = true)]
+        public bool RequireCloseBeyondBuffer { get; set; }
+
+        // ------------------------------------------------------------
+        // PRIVATE FIELDS
+        // ------------------------------------------------------------
+
+        private AverageTrueRange _atr;
+        private ExponentialMovingAverage _ema;
+        private TimeZoneInfo _londonTz;
+
+        private TimeSpan _setupStart;
+        private TimeSpan _setupEnd;
+        private TimeSpan _entryEnd;
+        private TimeSpan _forceExit;
+
+        private DateTime _currentLondonDate = DateTime.MinValue;
+        private bool _boxLocked;
+        private bool _tradeTakenToday;
+        private bool _boxValid;
+        private double _boxHigh;
+        private double _boxLow;
+
+        // ------------------------------------------------------------
+        // STARTUP
+        // ------------------------------------------------------------
+
+        protected override void OnStart()
+        {
+            _atr = Indicators.AverageTrueRange(AtrPeriod, MovingAverageType.Exponential);
+            _ema = Indicators.ExponentialMovingAverage(Bars.ClosePrices, EmaPeriod);
+
+            _setupStart = ParseTime(SetupStartText, "14:30");
+            _setupEnd = ParseTime(SetupEndText, "15:45");
+            _entryEnd = ParseTime(EntryEndText, "16:05");
+            _forceExit = ParseTime(ForceExitText, "16:45");
+
+            _londonTz = ResolveLondonTimeZone();
+
+            ResetDayState(GetLondonTime(Server.Time).Date);
+
+            Print("LondonFixBreakoutBot started on {0} {1}", SymbolName, TimeFrame);
+        }
+
+        // ------------------------------------------------------------
+        // MAIN BAR LOGIC
+        // ------------------------------------------------------------
+
+        protected override void OnBar()
+        {
+            if (Bars.Count < Math.Max(AtrPeriod + 5, EmaPeriod + 5))
+                return;
+
+            // Use last fully closed bar
+            int i = Bars.Count - 2;
+            if (i < 1)
+                return;
+
+            DateTime serverBarTime = Bars.OpenTimes[i];
+            DateTime londonBarTime = GetLondonTime(serverBarTime);
+            DateTime londonDate = londonBarTime.Date;
+            TimeSpan londonTod = londonBarTime.TimeOfDay;
+
+            if (londonDate != _currentLondonDate)
+                ResetDayState(londonDate);
+
+            ForceExitIfNeeded(londonTod);
+
+            if (!IsTradeDayAllowed(londonDate))
+                return;
+
+            if (SkipFridays && londonDate.DayOfWeek == DayOfWeek.Friday)
+                return;
+
+            // Build box during setup window using closed bar highs/lows
+            if (londonTod >= _setupStart && londonTod < _setupEnd)
+            {
+                UpdateBox(i);
+                return;
+            }
+
+            // Lock the box once setup window is over
+            if (!_boxLocked && londonTod >= _setupEnd)
+                LockBox(i);
+
+            if (!_boxValid)
+                return;
+
+            if (OneTradePerLondonDay && _tradeTakenToday)
+                return;
+
+            if (londonTod < _setupEnd || londonTod >= _entryEnd)
+                return;
+
+            if (GetCurrentSpreadPips() > MaxSpreadPips)
+                return;
+
+            TryEnterBreakout(i);
+        }
+
+        // ------------------------------------------------------------
+        // BOX MANAGEMENT
+        // ------------------------------------------------------------
+
+        private void ResetDayState(DateTime londonDate)
+        {
+            _currentLondonDate = londonDate;
+            _boxLocked = false;
+            _tradeTakenToday = false;
+            _boxValid = false;
+            _boxHigh = double.MinValue;
+            _boxLow = double.MaxValue;
+
+            Print("NEW LONDON DAY: {0:yyyy-MM-dd}", londonDate);
+        }
+
+        private void UpdateBox(int i)
+        {
+            double high = Bars.HighPrices[i];
+            double low = Bars.LowPrices[i];
+
+            if (high > _boxHigh)
+                _boxHigh = high;
+
+            if (low < _boxLow)
+                _boxLow = low;
+        }
+
+        private void LockBox(int i)
+        {
+            _boxLocked = true;
+
+            if (_boxHigh <= _boxLow || _boxHigh == double.MinValue || _boxLow == double.MaxValue)
+            {
+                _boxValid = false;
+                Print("BOX INVALID: no setup range built.");
+                return;
+            }
+
+            double boxHeight = _boxHigh - _boxLow;
+            double atr = _atr.Result[i];
+            double minAllowed = MinBoxAtrMult * atr;
+            double maxAllowed = MaxBoxAtrMult * atr;
+
+            if (boxHeight < minAllowed || boxHeight > maxAllowed)
+            {
+                _boxValid = false;
+                Print("BOX REJECTED: Height={0:F5}, ATR={1:F5}, Min={2:F5}, Max={3:F5}",
+                    boxHeight, atr, minAllowed, maxAllowed);
+                return;
+            }
+
+            _boxValid = true;
+
+            Print("BOX LOCKED: High={0:F5} Low={1:F5} Height={2:F5}",
+                _boxHigh, _boxLow, boxHeight);
+        }
+
+        // ------------------------------------------------------------
+        // ENTRY LOGIC
+        // ------------------------------------------------------------
+
+        private void TryEnterBreakout(int i)
+        {
+            double close = Bars.ClosePrices[i];
+            double atr = _atr.Result[i];
+            double buffer = BreakoutBufferAtrMult * atr;
+            double ema = _ema.Result[i];
+            double stopDistance = Math.Max((_boxHigh - _boxLow) * StopBoxMult, Symbol.PipSize * 2);
+
+            bool trendLongOk = !UseTrendFilter || close > ema;
+            bool trendShortOk = !UseTrendFilter || close < ema;
+
+            bool longBreak = EnableLongs &&
+                             trendLongOk &&
+                             (RequireCloseBeyondBuffer ? close > (_boxHigh + buffer) : Bars.HighPrices[i] > (_boxHigh + buffer));
+
+            bool shortBreak = EnableShorts &&
+                              trendShortOk &&
+                              (RequireCloseBeyondBuffer ? close < (_boxLow - buffer) : Bars.LowPrices[i] < (_boxLow - buffer));
+
+            if (longBreak)
+            {
+                EnterTrade(TradeType.Buy, stopDistance);
+                return;
+            }
+
+            if (shortBreak)
+            {
+                EnterTrade(TradeType.Sell, stopDistance);
+                return;
+            }
+        }
+
+        private void EnterTrade(TradeType tradeType, double stopDistancePrice)
+        {
+            if (Positions.FindAll(BotLabel, SymbolName).Length > 0)
+                return;
+
+            double entryPrice = tradeType == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
+            double stopPrice = tradeType == TradeType.Buy
+                ? entryPrice - stopDistancePrice
+                : entryPrice + stopDistancePrice;
+
+            double riskDistancePrice = Math.Abs(entryPrice - stopPrice);
+            double stopPips = riskDistancePrice / Symbol.PipSize;
+
+            if (stopPips <= 0)
+                return;
+
+            double volumeInUnits = GetVolumeInUnits(stopPips);
+            if (volumeInUnits < Symbol.VolumeInUnitsMin)
+            {
+                Print("Volume too small after normalization. Trade skipped.");
+                return;
+            }
+
+            var result = ExecuteMarketOrder(tradeType, SymbolName, volumeInUnits, BotLabel);
+
+            if (!result.IsSuccessful || result.Position == null)
+            {
+                Print("Order failed: {0}", result.Error);
+                return;
+            }
+
+            var position = result.Position;
+
+            double actualEntry = position.EntryPrice;
+            double actualStop = tradeType == TradeType.Buy
+                ? actualEntry - riskDistancePrice
+                : actualEntry + riskDistancePrice;
+
+            double actualTp = tradeType == TradeType.Buy
+                ? actualEntry + (riskDistancePrice * TakeProfitR)
+                : actualEntry - (riskDistancePrice * TakeProfitR);
+
+            ModifyPosition(position, actualStop, actualTp);
+
+            _tradeTakenToday = true;
+
+            Print("{0} ENTERED | Entry={1:F5} SL={2:F5} TP={3:F5} Vol={4}",
+                tradeType, actualEntry, actualStop, actualTp, volumeInUnits);
+        }
+
+        // ------------------------------------------------------------
+        // EXIT LOGIC
+        // ------------------------------------------------------------
+
+        private void ForceExitIfNeeded(TimeSpan londonTod)
+        {
+            if (londonTod < _forceExit)
+                return;
+
+            foreach (var position in Positions.FindAll(BotLabel, SymbolName))
+            {
+                ClosePosition(position);
+                Print("FORCE EXIT at London time {0}", londonTod);
+            }
+        }
+
+        // ------------------------------------------------------------
+        // HELPERS
+        // ------------------------------------------------------------
+
+        private bool IsTradeDayAllowed(DateTime londonDate)
+        {
+            if (!MonthEndOnly)
+                return true;
+
+            return IsInLastBusinessDaysOfMonth(londonDate, LastBusinessDaysOfMonth);
+        }
+
+        private bool IsInLastBusinessDaysOfMonth(DateTime date, int lastBusinessDays)
+        {
+            if (lastBusinessDays <= 0)
+                return true;
+
+            int businessDaysRemaining = 0;
+            DateTime d = date.Date;
+
+            while (d.Month == date.Month)
+            {
+                if (d.DayOfWeek != DayOfWeek.Saturday && d.DayOfWeek != DayOfWeek.Sunday)
+                    businessDaysRemaining++;
+
+                d = d.AddDays(1);
+            }
+
+            return businessDaysRemaining <= lastBusinessDays;
+        }
+
+        private double GetVolumeInUnits(double stopPips)
+        {
+            double volume;
+
+            if (UseRiskPercentSizing)
+            {
+                double riskAmount = Account.Equity * (RiskPercent / 100.0);
+                volume = Symbol.VolumeForFixedRisk(riskAmount, stopPips);
+            }
+            else
+            {
+                volume = Symbol.QuantityToVolumeInUnits(FixedVolumeLots);
+            }
+
+            return Symbol.NormalizeVolumeInUnits(volume, RoundingMode.Down);
+        }
+
+        private double GetCurrentSpreadPips()
+        {
+            return (Symbol.Ask - Symbol.Bid) / Symbol.PipSize;
+        }
+        private DateTime GetLondonTime(DateTime serverTime)
+        {
+            var utcTime = DateTime.SpecifyKind(serverTime, DateTimeKind.Utc);
+            return TimeZoneInfo.ConvertTimeFromUtc(utcTime, _londonTz);
+        }
+
+        private static TimeSpan ParseTime(string text, string fallback)
+        {
+            TimeSpan parsed;
+            if (TimeSpan.TryParse(text, out parsed))
+                return parsed;
+
+            return TimeSpan.Parse(fallback);
+        }
+
+        private static TimeZoneInfo ResolveLondonTimeZone()
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById("GMT Standard Time"); // Windows
+            }
+            catch
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById("Europe/London"); // Linux/macOS
+            }
+        }
+    }
+}
