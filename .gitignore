@@ -1,0 +1,19 @@
+# cTrader sample bots — not mine
+Sample*/
+
+# Build artefacts
+bin/
+obj/
+*.user
+
+# Compiled algo files (rebuilt from source)
+*.algo
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vs/
+*.suo
