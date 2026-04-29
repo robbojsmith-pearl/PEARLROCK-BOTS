@@ -6,33 +6,43 @@ using System.Linq;
 namespace cAlgo.Robots
 {
     // ═══════════════════════════════════════════════════════════════════
-    //  Index Liquidity Wick v1 — US30 / US500
+    //  LiquidityWickBot v5.1 — Multi-pair FX Liquidity Sweep / Wick Rejection
     //  Pearlrock Systematic
     //
-    //  Purpose:
-    //  Liquidity sweep / wick rejection engine rebuilt for index CFDs.
+    //  CHANGELOG v5.1 (CRITICAL — risk-sizing bug fix):
+    //  - FIX: riskPerLot calc — Symbol.PipValue is per-UNIT not per-LOT.
+    //    Original v4 (and v5.0) inflated lotsRaw by ~LotSize (100,000), causing
+    //    every trade to be silently clamped to MaxLotsCap rather than risk-based.
+    //    Historical v4 backtests were effectively fixed-size at the cap, not 0.10% risk.
+    //
+    //  CHANGELOG v5.0 vs v4:
+    //  - FIX: Volume rounding Down → ToNearest (was systematically under-risking)
+    //  - FIX: Outside-bar two-sided sweeps now skipped (was silently picking buy)
+    //  - FIX: Geometry sanity check at OnStart (catches impossible param combos)
+    //  - FIX: MaxLots and VolumeCap unified — consistent skip-or-cap behaviour, no silent under-risk
+    //  - FIX: Partial close + BE shift split — BE fires even if partial vol too small
+    //  - ADD: First-trade sizing audit (verifies Symbol.PipValue math on each pair)
+    //  - ADD: Outside-bar diagnostic logging
+    //  - ADD: GetFitness with soft penalties (no cliffs at threshold boundaries)
+    //  - ADD: Cap-triggered logging so silent under-risking is visible
     //
     //  Designed for:
-    //  - US500 and US30
-    //  - M5 / M15 / M30 charts
-    //  - US cash / NY session behaviour
+    //  - JPY FX pairs (GBPJPY, AUDJPY, EURJPY, NZDJPY) primarily
+    //  - Other major FX pairs secondary
+    //  - M15 / M30 / H1 charts
+    //  - Asian / London / Overlap sessions
     //
-    //  Key changes vs FX LiquidityWickBot:
-    //  1. Point-based controls instead of FX-pip assumptions.
-    //  2. US cash-session defaults: 14:30–21:00 London.
-    //  3. Safer CFD/index sizing using Symbol.VolumeForProportionalRisk.
-    //  4. Direction toggles for long-only / short-only testing.
-    //  5. Optional spread, min/max stop, margin, and volume caps.
-    //  6. Cleaner rejection logic: wick dominance, close location, close back inside swept level.
-    //  7. Better diagnostics for missed-trade investigation.
-    //  8. Overnight session handling fixed.
+    //  IMPORTANT — RUN ONCE BEFORE OPTIMISING:
+    //  1. Verify [SIZE-AUDIT] line shows expected_loss ≈ risk_money on first trade
+    //  2. Verify no [CAP-HIT] warnings flooding the log (means MaxLotsCap too tight)
+    //  3. Run raw baseline before optimisation to confirm signal exists
     // ═══════════════════════════════════════════════════════════════════
 
     [Robot(AccessRights = AccessRights.None, TimeZone = TimeZones.UTC)]
-    public class Index_LiquidityWick_US30_US500_v1 : Robot
+    public class LiquidityWickBot_v5 : Robot
     {
         // ── Identity ─────────────────────────────────────────────────
-        [Parameter("Bot Label", DefaultValue = "IDX_LIQ_WICK_V1", Group = "Identity")]
+        [Parameter("Bot Label", DefaultValue = "LIQ_WICK_V5", Group = "Identity")]
         public string BotLabel { get; set; }
 
         // ── Direction ────────────────────────────────────────────────
@@ -42,8 +52,8 @@ namespace cAlgo.Robots
         [Parameter("Allow Shorts", DefaultValue = true, Group = "Direction")]
         public bool AllowShorts { get; set; }
 
-        // ── Structure ────────────────────────────────────────────────
-        [Parameter("Use Pro Structure Swings", DefaultValue = true, Group = "Structure")]
+        // ── Structure (Pro Swings) ────────────────────────────────────
+        [Parameter("Use Pro Structure (Swings)", DefaultValue = true, Group = "Structure")]
         public bool UseProStructure { get; set; }
 
         [Parameter("Swing Left Bars", DefaultValue = 3, MinValue = 1, Group = "Structure")]
@@ -52,60 +62,60 @@ namespace cAlgo.Robots
         [Parameter("Swing Right Bars", DefaultValue = 3, MinValue = 1, Group = "Structure")]
         public int SwingRight { get; set; }
 
-        [Parameter("Max Swing Age Bars", DefaultValue = 300, MinValue = 20, Group = "Structure")]
+        [Parameter("Max Swing Age (bars)", DefaultValue = 400, MinValue = 50, Group = "Structure")]
         public int MaxSwingAgeBars { get; set; }
 
-        [Parameter("Min Swing Distance Points", DefaultValue = 0.0, MinValue = 0.0, Step = 0.5, Group = "Structure")]
-        public double MinSwingDistancePoints { get; set; }
+        [Parameter("Min Swing Distance (pips)", DefaultValue = 20, MinValue = 0, Step = 1, Group = "Structure")]
+        public double MinSwingDistancePips { get; set; }
 
-        [Parameter("Min Swing Distance ATR", DefaultValue = 1.20, MinValue = 0.0, Step = 0.05, Group = "Structure")]
+        [Parameter("Min Swing Distance (ATR)", DefaultValue = 1.2, MinValue = 0.0, Step = 0.1, Group = "Structure")]
         public double MinSwingDistanceAtr { get; set; }
 
-        [Parameter("Sweep Buffer Points", DefaultValue = 0.0, MinValue = 0.0, Step = 0.5, Group = "Structure")]
-        public double SweepBufferPoints { get; set; }
+        [Parameter("Sweep Buffer (pips)", DefaultValue = 2.0, MinValue = 0, Step = 0.1, Group = "Structure")]
+        public double SweepBufferPips { get; set; }
 
-        [Parameter("Sweep Buffer ATR Fraction", DefaultValue = 0.03, MinValue = 0.0, Step = 0.01, Group = "Structure")]
+        [Parameter("Sweep Buffer (ATR fraction)", DefaultValue = 0.10, MinValue = 0, Step = 0.05, Group = "Structure")]
         public double SweepBufferAtrFrac { get; set; }
 
-        // ── Candle / Wick Quality ────────────────────────────────────
+        // ── Candle / Wick Quality ─────────────────────────────────────
         [Parameter("ATR Period", DefaultValue = 14, MinValue = 1, Group = "Pattern")]
         public int AtrPeriod { get; set; }
 
-        [Parameter("ATR Avg Period", DefaultValue = 30, MinValue = 2, Group = "Pattern")]
+        [Parameter("ATR Avg Period", DefaultValue = 50, MinValue = 2, Group = "Pattern")]
         public int AtrAvgPeriod { get; set; }
 
-        [Parameter("Range >= ATR *", DefaultValue = 0.60, MinValue = 0.05, Step = 0.05, Group = "Pattern")]
+        [Parameter("Range >= ATR *", DefaultValue = 1.15, Step = 0.05, Group = "Pattern")]
         public double RangeAtrMultiplier { get; set; }
 
-        [Parameter("ATR >= AvgATR *", DefaultValue = 0.70, MinValue = 0.05, Step = 0.05, Group = "Pattern")]
+        [Parameter("ATR >= AvgATR *", DefaultValue = 0.95, Step = 0.05, Group = "Pattern")]
         public double AtrComparisonMultiplier { get; set; }
 
-        [Parameter("Max Body % of Range", DefaultValue = 0.38, MinValue = 0.05, MaxValue = 0.95, Step = 0.01, Group = "Pattern")]
+        [Parameter("Max Body % of Range", DefaultValue = 0.20, Step = 0.01, Group = "Pattern")]
         public double MaxBodyPctOfRange { get; set; }
 
-        [Parameter("Min Dominant Wick %", DefaultValue = 0.35, MinValue = 0.05, MaxValue = 0.95, Step = 0.01, Group = "Pattern")]
+        [Parameter("Min Dominant Wick %", DefaultValue = 0.45, Step = 0.01, Group = "Pattern")]
         public double MinDominantWickPctOfRange { get; set; }
 
-        [Parameter("Wick Dominance Ratio", DefaultValue = 1.15, MinValue = 0.1, Step = 0.05, Group = "Pattern")]
+        [Parameter("Wick Dominance Ratio", DefaultValue = 1.8, Step = 0.1, Group = "Pattern")]
         public double WickDominanceRatio { get; set; }
 
-        [Parameter("Close Location Threshold", DefaultValue = 0.55, MinValue = 0.05, MaxValue = 0.95, Step = 0.05, Group = "Pattern")]
+        [Parameter("Close Location Threshold", DefaultValue = 0.70, Step = 0.05, Group = "Pattern")]
         public double CloseLocationThreshold { get; set; }
 
         [Parameter("Require Close Back Inside", DefaultValue = true, Group = "Pattern")]
         public bool RequireCloseBackInside { get; set; }
 
-        // ── Regime Filter ────────────────────────────────────────────
-        [Parameter("Use ADX Filter", DefaultValue = false, Group = "Regime")]
+        // ── Regime Filter (ADX) ───────────────────────────────────────
+        [Parameter("Use ADX Filter", DefaultValue = true, Group = "Regime")]
         public bool UseAdxFilter { get; set; }
 
         [Parameter("ADX Period", DefaultValue = 14, MinValue = 2, Group = "Regime")]
         public int AdxPeriod { get; set; }
 
-        [Parameter("Max ADX to Trade", DefaultValue = 34.0, MinValue = 1.0, Step = 0.5, Group = "Regime")]
+        [Parameter("Max ADX to Trade", DefaultValue = 22.0, Step = 0.5, Group = "Regime")]
         public double MaxAdxToTrade { get; set; }
 
-        // ── Higher Timeframe Trend Filter ────────────────────────────
+        // ── Higher Timeframe Trend Filter ─────────────────────────────
         [Parameter("Use D1 Trend Filter", DefaultValue = false, Group = "HTF Trend")]
         public bool UseD1TrendFilter { get; set; }
 
@@ -115,27 +125,64 @@ namespace cAlgo.Robots
         [Parameter("Trend Mode", DefaultValue = "WithTrend", Group = "HTF Trend")]
         public string TrendMode { get; set; }
 
-        // ── Trade Control / Session ──────────────────────────────────
-        [Parameter("Trade Start HH:mm London", DefaultValue = "14:30", Group = "Trade Control")]
-        public string TradeStart { get; set; }
+        // ── Session Filter ────────────────────────────────────────────
+        [Parameter("Trade Asian Session (00-07 London)", DefaultValue = false, Group = "Session Filter")]
+        public bool TradeAsian { get; set; }
 
-        [Parameter("Trade End HH:mm London", DefaultValue = "21:00", Group = "Trade Control")]
-        public string TradeEnd { get; set; }
+        [Parameter("Trade London Session (07-12 London)", DefaultValue = true, Group = "Session Filter")]
+        public bool TradeLondon { get; set; }
 
-        [Parameter("No Trade First Minutes", DefaultValue = 0, MinValue = 0, MaxValue = 180, Step = 5, Group = "Trade Control")]
-        public int NoTradeFirstMinutes { get; set; }
+        [Parameter("Trade London/NY Overlap (12-17 London)", DefaultValue = true, Group = "Session Filter")]
+        public bool TradeLondonNyOverlap { get; set; }
 
-        [Parameter("Max Trades Per Day", DefaultValue = 2, MinValue = 1, Group = "Trade Control")]
-        public int MaxTradesPerDay { get; set; }
+        [Parameter("Trade NY Session (17-21 London)", DefaultValue = false, Group = "Session Filter")]
+        public bool TradeNy { get; set; }
 
-        [Parameter("Cooldown Minutes After Exit", DefaultValue = 60, MinValue = 0, Group = "Trade Control")]
-        public int CooldownMinutes { get; set; }
+        // ── Risk ──────────────────────────────────────────────────────
+        [Parameter("Risk % per Trade", DefaultValue = 0.10, Step = 0.01, Group = "Risk")]
+        public double RiskPercent { get; set; }
 
-        [Parameter("Min Bars Since Last Signal", DefaultValue = 3, MinValue = 1, Group = "Trade Control")]
-        public int MinBarsSinceSignal { get; set; }
+        [Parameter("Stop Loss (ATR mult)", DefaultValue = 1.6, Step = 0.1, Group = "Risk")]
+        public double StopLossAtrMult { get; set; }
 
-        // ── Day Filter ───────────────────────────────────────────────
-        [Parameter("Use Day Filter", DefaultValue = true, Group = "Day Filter")]
+        [Parameter("Take Profit (ATR mult)", DefaultValue = 2.2, Step = 0.1, Group = "Risk")]
+        public double TakeProfitAtrMult { get; set; }
+
+        // FIX: Unified cap. Set in lots — converted to units internally.
+        // 0 = no cap. If position would exceed cap, behaviour controlled by SkipIfCapHit.
+        [Parameter("Max Lots Cap (0=off)", DefaultValue = 0.50, MinValue = 0, Step = 0.01, Group = "Risk")]
+        public double MaxLotsCap { get; set; }
+
+        [Parameter("Skip If Cap Hit", DefaultValue = false, Group = "Risk")]
+        public bool SkipIfCapHit { get; set; }
+
+        [Parameter("Min Stop Pips 0=off", DefaultValue = 0.0, MinValue = 0.0, Step = 1.0, Group = "Risk")]
+        public double MinStopPips { get; set; }
+
+        [Parameter("Max Stop Pips 0=off", DefaultValue = 0.0, MinValue = 0.0, Step = 1.0, Group = "Risk")]
+        public double MaxStopPips { get; set; }
+
+        [Parameter("Max Margin Usage %", DefaultValue = 30.0, Step = 1.0, Group = "Risk")]
+        public double MaxMarginUsagePct { get; set; }
+
+        [Parameter("Max Trade Duration (Hours, 0=off)", DefaultValue = 8, MinValue = 0, MaxValue = 48, Step = 1, Group = "Risk")]
+        public int MaxTradeHours { get; set; }
+
+        // ── Partial Close ─────────────────────────────────────────────
+        [Parameter("Use Partial Close at 1R", DefaultValue = false, Group = "Partial Close")]
+        public bool UsePartialClose { get; set; }
+
+        [Parameter("Partial Close % of Position", DefaultValue = 50, MinValue = 10, MaxValue = 90, Step = 5, Group = "Partial Close")]
+        public int PartialClosePct { get; set; }
+
+        [Parameter("BE Offset After Partial (pips)", DefaultValue = 1, MinValue = 0, Step = 1, Group = "Partial Close")]
+        public int BeOffsetPips { get; set; }
+
+        [Parameter("BE-Only at 1R (no partial)", DefaultValue = false, Group = "Partial Close")]
+        public bool BeOnlyAt1R { get; set; }
+
+        // ── Day Filter ────────────────────────────────────────────────
+        [Parameter("Use Day Filter", DefaultValue = false, Group = "Day Filter")]
         public bool UseDayFilter { get; set; }
 
         [Parameter("Trade Monday", DefaultValue = true, Group = "Day Filter")]
@@ -150,59 +197,37 @@ namespace cAlgo.Robots
         [Parameter("Trade Thursday", DefaultValue = true, Group = "Day Filter")]
         public bool TradeThursday { get; set; }
 
-        [Parameter("Trade Friday", DefaultValue = false, Group = "Day Filter")]
+        [Parameter("Trade Friday", DefaultValue = true, Group = "Day Filter")]
         public bool TradeFriday { get; set; }
 
-        // ── Risk ─────────────────────────────────────────────────────
-        [Parameter("Risk % per Trade", DefaultValue = 0.20, MinValue = 0.01, Step = 0.01, Group = "Risk")]
-        public double RiskPercent { get; set; }
+        // ── Trade Control ─────────────────────────────────────────────
+        [Parameter("Trade Start (HH:mm London)", DefaultValue = "06:00", Group = "Trade Control")]
+        public string TradeStart { get; set; }
 
-        [Parameter("Stop Loss ATR Mult", DefaultValue = 1.20, MinValue = 0.10, Step = 0.05, Group = "Risk")]
-        public double StopLossAtrMult { get; set; }
+        [Parameter("Trade End (HH:mm London)", DefaultValue = "21:00", Group = "Trade Control")]
+        public string TradeEnd { get; set; }
 
-        [Parameter("Take Profit ATR Mult", DefaultValue = 2.00, MinValue = 0.10, Step = 0.05, Group = "Risk")]
-        public double TakeProfitAtrMult { get; set; }
+        [Parameter("Max Trades Per Day", DefaultValue = 2, MinValue = 1, Group = "Trade Control")]
+        public int MaxTradesPerDay { get; set; }
 
-        [Parameter("Min Stop Points 0=off", DefaultValue = 0.0, MinValue = 0.0, Step = 0.5, Group = "Risk")]
-        public double MinStopPoints { get; set; }
+        [Parameter("Cooldown Minutes After Exit", DefaultValue = 120, MinValue = 0, Group = "Trade Control")]
+        public int CooldownMinutes { get; set; }
 
-        [Parameter("Max Stop Points 0=off", DefaultValue = 0.0, MinValue = 0.0, Step = 1.0, Group = "Risk")]
-        public double MaxStopPoints { get; set; }
+        [Parameter("Min Bars Since Last Signal", DefaultValue = 6, MinValue = 1, Group = "Trade Control")]
+        public int MinBarsSinceSignal { get; set; }
 
-        [Parameter("Volume Cap Units 0=off", DefaultValue = 0, MinValue = 0, Step = 1, Group = "Risk")]
-        public int VolumeCapUnits { get; set; }
-
-        [Parameter("Skip If Volume Hits Cap", DefaultValue = false, Group = "Risk")]
-        public bool SkipIfVolumeHitsCap { get; set; }
-
-        [Parameter("Max Margin Usage %", DefaultValue = 30.0, MinValue = 1.0, Step = 1.0, Group = "Risk")]
-        public double MaxMarginUsagePct { get; set; }
-
-        [Parameter("Max Trade Hours 0=off", DefaultValue = 6, MinValue = 0, MaxValue = 48, Step = 1, Group = "Risk")]
-        public int MaxTradeHours { get; set; }
-
-        // ── Partial Close ────────────────────────────────────────────
-        [Parameter("Use Partial Close at 1R", DefaultValue = false, Group = "Partial Close")]
-        public bool UsePartialClose { get; set; }
-
-        [Parameter("Partial Close %", DefaultValue = 50, MinValue = 10, MaxValue = 90, Step = 5, Group = "Partial Close")]
-        public int PartialClosePct { get; set; }
-
-        [Parameter("BE Offset Points", DefaultValue = 0.0, MinValue = 0.0, Step = 0.5, Group = "Partial Close")]
-        public double BeOffsetPoints { get; set; }
-
-        // ── Circuit Breaker ──────────────────────────────────────────
-        [Parameter("Daily Loss Limit % 0=off", DefaultValue = 2.0, MinValue = 0.0, Step = 0.1, Group = "Circuit Breaker")]
+        // ── Circuit Breaker ───────────────────────────────────────────
+        [Parameter("Daily Loss Limit % (0=off)", DefaultValue = 2.0, MinValue = 0, Step = 0.1, Group = "Circuit Breaker")]
         public double DailyLossLimitPct { get; set; }
 
-        // ── Safety ───────────────────────────────────────────────────
+        // ── Safety ────────────────────────────────────────────────────
         [Parameter("Use Spread Filter", DefaultValue = true, Group = "Safety")]
         public bool UseSpreadFilter { get; set; }
 
-        [Parameter("Max Spread Points", DefaultValue = 6.0, MinValue = 0.0, Step = 0.5, Group = "Safety")]
-        public double MaxSpreadPoints { get; set; }
+        [Parameter("Max Spread (pips)", DefaultValue = 3.0, Step = 0.1, Group = "Safety")]
+        public double MaxSpreadPips { get; set; }
 
-        // ── Trailing ─────────────────────────────────────────────────
+        // ── Trailing ──────────────────────────────────────────────────
         [Parameter("Use Trailing Stop", DefaultValue = false, Group = "Trailing")]
         public bool UseTrailingStop { get; set; }
 
@@ -212,23 +237,23 @@ namespace cAlgo.Robots
         [Parameter("Trailing ATR Period", DefaultValue = 14, MinValue = 1, Group = "Trailing")]
         public int TrailingAtrPeriod { get; set; }
 
-        [Parameter("Trail Distance ATR Mult", DefaultValue = 1.40, MinValue = 0.10, Step = 0.05, Group = "Trailing")]
+        [Parameter("Trail Distance (ATR mult)", DefaultValue = 1.8, Step = 0.1, Group = "Trailing")]
         public double TrailingStopAtrMult { get; set; }
 
         // ── Fitness ──────────────────────────────────────────────────
-        [Parameter("Min Total Trades", DefaultValue = 60, MinValue = 1, Group = "Fitness")]
+        [Parameter("Min Total Trades", DefaultValue = 80, MinValue = 1, Group = "Fitness")]
         public int MinTotalTrades { get; set; }
 
-        [Parameter("Min Trades Per Year", DefaultValue = 8, MinValue = 1, Group = "Fitness")]
+        [Parameter("Min Trades Per Year", DefaultValue = 15, MinValue = 1, Group = "Fitness")]
         public double MinTradesPerYear { get; set; }
 
-        [Parameter("Max Fitness DD %", DefaultValue = 18.0, MinValue = 1.0, Step = 0.5, Group = "Fitness")]
+        [Parameter("Max Fitness DD %", DefaultValue = 10.0, MinValue = 1.0, Step = 0.5, Group = "Fitness")]
         public double MaxFitnessDrawdownPct { get; set; }
 
-        [Parameter("Backtest Years", DefaultValue = 7.0, MinValue = 0.5, Step = 0.5, Group = "Fitness")]
+        [Parameter("Backtest Years", DefaultValue = 5.0, MinValue = 0.5, Step = 0.5, Group = "Fitness")]
         public double BacktestYears { get; set; }
 
-        // ── Logging ──────────────────────────────────────────────────
+        // ── Logging ───────────────────────────────────────────────────
         [Parameter("Log Signals Only", DefaultValue = false, Group = "Logging")]
         public bool LogSignalsOnly { get; set; }
 
@@ -238,7 +263,7 @@ namespace cAlgo.Robots
         [Parameter("Log Skip Reasons", DefaultValue = false, Group = "Logging")]
         public bool LogSkipReasons { get; set; }
 
-        // ── Indicators ───────────────────────────────────────────────
+        // ── Indicators ────────────────────────────────────────────────
         private AverageTrueRange _atr;
         private AverageTrueRange _atrAvg;
         private AverageTrueRange _atrTrail;
@@ -246,7 +271,11 @@ namespace cAlgo.Robots
         private Bars _d1Bars;
         private ExponentialMovingAverage _d1Ema;
 
-        // ── State ────────────────────────────────────────────────────
+        // ── London timezone ───────────────────────────────────────────
+        private static readonly TimeZoneInfo LondonTz =
+            TimeZoneInfo.FindSystemTimeZoneById("GMT Standard Time");
+
+        // ── State ─────────────────────────────────────────────────────
         private DateTime _lastExitTime = DateTime.MinValue;
         private DateTime _lastLondonDay = DateTime.MinValue;
         private int _tradesToday = 0;
@@ -254,10 +283,33 @@ namespace cAlgo.Robots
         private double _startOfDayEquity = 0;
         private bool _circuitBroken = false;
         private long _partialClosedPosId = -1;
+        private long _beShiftedPosId = -1;
+        private bool _firstTradeAudited = false;
 
         // ─────────────────────────────────────────────────────────────
         protected override void OnStart()
         {
+            // FIX: Geometry sanity check
+            if (MaxBodyPctOfRange + MinDominantWickPctOfRange > 1.0)
+            {
+                Print($"⚠️  CONFIG WARNING: MaxBodyPctOfRange ({MaxBodyPctOfRange:P0}) + " +
+                      $"MinDominantWickPctOfRange ({MinDominantWickPctOfRange:P0}) > 100%. " +
+                      $"Geometrically impossible. NO TRADES WILL FIRE. Stop and fix params.");
+                Stop();
+                return;
+            }
+
+            // Instrument warning
+            var sym = SymbolName.ToUpperInvariant();
+            bool isFx = sym.Length == 6 ||
+                        sym.Contains("USD") || sym.Contains("EUR") ||
+                        sym.Contains("GBP") || sym.Contains("JPY") ||
+                        sym.Contains("CHF") || sym.Contains("AUD") ||
+                        sym.Contains("NZD") || sym.Contains("CAD");
+
+            if (!isFx)
+                Print($"⚠️  WARNING: {SymbolName} may not be an FX pair. Verify parameters are appropriate.");
+
             _atr = Indicators.AverageTrueRange(AtrPeriod, MovingAverageType.Exponential);
             _atrAvg = Indicators.AverageTrueRange(AtrAvgPeriod, MovingAverageType.Exponential);
             _atrTrail = Indicators.AverageTrueRange(TrailingAtrPeriod, MovingAverageType.Exponential);
@@ -272,12 +324,13 @@ namespace cAlgo.Robots
             _startOfDayEquity = Account.Equity;
             Positions.Closed += OnPositionClosed;
 
-            Print($"═══ {BotLabel} started on {SymbolName} ({Bars.TimeFrame}) ═══");
-            Print($"SPECS | PipSize={Symbol.PipSize} | PipValue={Symbol.PipValue} | LotSize={Symbol.LotSize} | VolMin={Symbol.VolumeInUnitsMin} | VolStep={Symbol.VolumeInUnitsStep} | VolMax={Symbol.VolumeInUnitsMax}");
-            Print($"SESSION | {TradeStart}-{TradeEnd} London | NoTradeFirst={NoTradeFirstMinutes}m | MaxTrades={MaxTradesPerDay} | Cooldown={CooldownMinutes}m");
-            Print($"PATTERN | RangeATR>={RangeAtrMultiplier} | Body<={MaxBodyPctOfRange:P0} | Wick>={MinDominantWickPctOfRange:P0} | WickDom={WickDominanceRatio:F2} | CloseLoc={CloseLocationThreshold:F2}");
-            Print($"RISK | Risk={RiskPercent}% | SL={StopLossAtrMult}ATR | TP={TakeProfitAtrMult}ATR | MaxMargin={MaxMarginUsagePct}% | SpreadMax={MaxSpreadPoints} pts");
-            Print($"FILTERS | ADX={UseAdxFilter} | D1Trend={UseD1TrendFilter}({TrendMode}) | DayFilter={UseDayFilter} | Longs={AllowLongs} Shorts={AllowShorts}");
+            Print($"═══ {BotLabel} v5 started on {SymbolName} ({Bars.TimeFrame}) ═══");
+            Print($"SPECS  | LotSize={Symbol.LotSize} | PipSize={Symbol.PipSize} | PipValue={Symbol.PipValue} | VolMin={Symbol.VolumeInUnitsMin} | VolStep={Symbol.VolumeInUnitsStep}");
+            Print($"SESSION| {TradeStart}-{TradeEnd} London | Asian={TradeAsian} London={TradeLondon} Overlap={TradeLondonNyOverlap} NY={TradeNy}");
+            Print($"PATTERN| RangeATR>={RangeAtrMultiplier} | Body<={MaxBodyPctOfRange:P0} | Wick>={MinDominantWickPctOfRange:P0} | WickDom={WickDominanceRatio:F2} | CloseLoc={CloseLocationThreshold:F2}");
+            Print($"RISK   | Risk={RiskPercent}% | SL={StopLossAtrMult}ATR | TP={TakeProfitAtrMult}ATR | MaxLotsCap={MaxLotsCap} | MaxMargin={MaxMarginUsagePct}% | SpreadMax={MaxSpreadPips}p");
+            Print($"FILTERS| ADX={UseAdxFilter}({MaxAdxToTrade}) | D1Trend={UseD1TrendFilter}({TrendMode}) | DayFilter={UseDayFilter} | Longs={AllowLongs} Shorts={AllowShorts}");
+            Print($"FITNESS| MinTrades={MinTotalTrades} | MinPerYear={MinTradesPerYear} | MaxDD={MaxFitnessDrawdownPct}% | BacktestYears={BacktestYears}");
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -291,6 +344,7 @@ namespace cAlgo.Robots
             if (CheckCircuitBreaker()) return;
             if (!PassesDayFilter(london)) return;
             if (!InTradeHours(london)) return;
+            if (!PassesSessionFilter(london)) return;
             if (!SafetyOk()) return;
             if (!IndicatorsReady()) return;
 
@@ -332,7 +386,8 @@ namespace cAlgo.Robots
                     }
                 }
 
-                if (UsePartialClose && _partialClosedPosId != pos.Id && pos.StopLoss.HasValue)
+                // FIX: Partial close and BE shift now independent
+                if ((UsePartialClose || BeOnlyAt1R) && pos.StopLoss.HasValue)
                 {
                     double oneR = Math.Abs(pos.EntryPrice - pos.StopLoss.Value);
                     bool hitOneR = pos.TradeType == TradeType.Buy
@@ -341,14 +396,29 @@ namespace cAlgo.Robots
 
                     if (hitOneR)
                     {
-                        double closeVolume = Symbol.NormalizeVolumeInUnits(pos.VolumeInUnits * (PartialClosePct / 100.0), RoundingMode.Down);
-
-                        if (closeVolume >= Symbol.VolumeInUnitsMin)
+                        // Try partial close (only if requested AND volume large enough)
+                        if (UsePartialClose && _partialClosedPosId != pos.Id)
                         {
-                            ClosePosition(pos, closeVolume);
-                            _partialClosedPosId = pos.Id;
+                            double closeVolume = Symbol.NormalizeVolumeInUnits(
+                                pos.VolumeInUnits * (PartialClosePct / 100.0),
+                                RoundingMode.Down);
 
-                            double beOffset = BeOffsetPoints;
+                            if (closeVolume >= Symbol.VolumeInUnitsMin)
+                            {
+                                ClosePosition(pos, closeVolume);
+                                _partialClosedPosId = pos.Id;
+                                Print($"PARTIAL CLOSE {PartialClosePct}% on pos {pos.Id} | closeVol={closeVolume:F0}");
+                            }
+                            else if (LogSizingDetails)
+                            {
+                                Print($"PARTIAL SKIPPED — vol {closeVolume:F2} < min {Symbol.VolumeInUnitsMin:F2} | BE shift will still attempt");
+                            }
+                        }
+
+                        // Independently shift to BE (regardless of whether partial fired)
+                        if (_beShiftedPosId != pos.Id)
+                        {
+                            double beOffset = BeOffsetPips * Symbol.PipSize;
                             double bePrice = pos.TradeType == TradeType.Buy
                                 ? pos.EntryPrice + beOffset
                                 : pos.EntryPrice - beOffset;
@@ -360,7 +430,8 @@ namespace cAlgo.Robots
                             if (improve)
                             {
                                 pos.ModifyStopLossPrice(bePrice);
-                                Print($"PARTIAL CLOSE {PartialClosePct}% | BE → {bePrice:F2}");
+                                _beShiftedPosId = pos.Id;
+                                Print($"BE SHIFT on pos {pos.Id} | SL → {bePrice:F5}");
                             }
                         }
                     }
@@ -410,7 +481,7 @@ namespace cAlgo.Robots
             {
                 pos.ModifyStopLossPrice(newSL);
                 if (!LogSignalsOnly)
-                    Print($"TRAIL {pos.TradeType} → SL={newSL:F2} | LastClose={lastClose:F2}");
+                    Print($"TRAIL {pos.TradeType} → SL={newSL:F5} | LastClose={lastClose:F5}");
             }
         }
 
@@ -450,13 +521,13 @@ namespace cAlgo.Robots
 
             if (range < atr * RangeAtrMultiplier)
             {
-                Skip($"range {range:F2} < ATR*{RangeAtrMultiplier:F2} {(atr * RangeAtrMultiplier):F2}");
+                Skip($"range {(range / Symbol.PipSize):F1}p < ATR*{RangeAtrMultiplier:F2}");
                 return false;
             }
 
             if (atr < avgAtr * AtrComparisonMultiplier)
             {
-                Skip($"ATR {atr:F2} < AvgATR*{AtrComparisonMultiplier:F2} {(avgAtr * AtrComparisonMultiplier):F2}");
+                Skip($"ATR {(atr / Symbol.PipSize):F1}p < AvgATR*{AtrComparisonMultiplier:F2}");
                 return false;
             }
 
@@ -491,10 +562,13 @@ namespace cAlgo.Robots
                     return false;
                 }
 
-                double requiredDist = Math.Max(MinSwingDistancePoints, MinSwingDistanceAtr * atr);
-                if ((swingHigh - swingLow) < requiredDist)
+                double requiredDistancePrice = Math.Max(
+                    MinSwingDistancePips * Symbol.PipSize,
+                    MinSwingDistanceAtr * atr);
+
+                if ((swingHigh - swingLow) < requiredDistancePrice)
                 {
-                    Skip($"swing range {(swingHigh - swingLow):F2} < required {requiredDist:F2}");
+                    Skip($"swing range {((swingHigh - swingLow) / Symbol.PipSize):F1}p < required");
                     return false;
                 }
             }
@@ -513,9 +587,9 @@ namespace cAlgo.Robots
                 }
             }
 
-            double buffer = SweepBufferPoints + (SweepBufferAtrFrac * atr);
-            bool sweptHigh = high > swingHigh + buffer;
-            bool sweptLow = low < swingLow - buffer;
+            double bufferPrice = (SweepBufferPips * Symbol.PipSize) + (SweepBufferAtrFrac * atr);
+            bool sweptHigh = high > swingHigh + bufferPrice;
+            bool sweptLow = low < swingLow - bufferPrice;
 
             bool sellRejectionOk = (!RequireCloseBackInside || close < swingHigh) && sellCloseStrong;
             bool buyRejectionOk = (!RequireCloseBackInside || close > swingLow) && buyCloseStrong;
@@ -523,11 +597,11 @@ namespace cAlgo.Robots
             bool sellSignal = AllowShorts && sweptHigh && sellWickDominant && sellRejectionOk;
             bool buySignal = AllowLongs && sweptLow && buyWickDominant && buyRejectionOk;
 
+            // FIX: Outside-bar two-sided sweep is high-risk noise, not a signal
             if (buySignal && sellSignal)
             {
-                // Rare outside bar. Choose the stronger wick.
-                if (upperWick > lowerWick) buySignal = false;
-                else sellSignal = false;
+                Print($"[{Server.Time:HH:mm}] OUTSIDE BAR — sweptH AND sweptL with both rejections | SKIPPING (high-vol noise)");
+                return false;
             }
 
             if (!(buySignal || sellSignal))
@@ -562,16 +636,15 @@ namespace cAlgo.Robots
             direction = buySignal ? TradeType.Buy : TradeType.Sell;
 
             info = $"bar={barIndex} " +
-                   $"range={range:F2}pts " +
+                   $"range={(range / Symbol.PipSize):F1}p " +
                    $"body%={(bodyPct * 100):F1}% " +
-                   $"uw={upperWick:F2}pts " +
-                   $"lw={lowerWick:F2}pts " +
-                   $"ATR={atr:F2}pts " +
+                   $"uw={(upperWick / Symbol.PipSize):F1}p " +
+                   $"lw={(lowerWick / Symbol.PipSize):F1}p " +
+                   $"ATR={(atr / Symbol.PipSize):F1}p " +
                    (UseAdxFilter ? $"ADX={_dms.ADX[barIndex]:F1} " : "") +
                    (UseD1TrendFilter ? $"D1Trend=✓ " : "") +
-                   $"swH={swingHigh:F2}@{swingHighIndex} " +
-                   $"swL={swingLow:F2}@{swingLowIndex} " +
-                   $"buf={buffer:F2}pts " +
+                   $"swH={swingHigh:F5}@{swingHighIndex} " +
+                   $"swL={swingLow:F5}@{swingLowIndex} " +
                    $"closePos={(closePos * 100):F0}%";
 
             return true;
@@ -644,29 +717,27 @@ namespace cAlgo.Robots
             double atr = _atr.Result[signalBarIndex];
             if (atr <= 0) return;
 
-            double slPoints = atr * StopLossAtrMult;
-            double tpPoints = atr * TakeProfitAtrMult;
+            double slPips = (atr * StopLossAtrMult) / Symbol.PipSize;
+            double tpPips = (atr * TakeProfitAtrMult) / Symbol.PipSize;
 
-            if (MinStopPoints > 0 && slPoints < MinStopPoints)
+            if (MinStopPips > 0 && slPips < MinStopPips)
             {
-                if (!LogSignalsOnly) Print($"SKIP ENTRY — SL {slPoints:F2}pts < min {MinStopPoints:F2}pts");
+                if (!LogSignalsOnly) Print($"SKIP ENTRY — SL {slPips:F1}p < min {MinStopPips:F1}p");
                 return;
             }
 
-            if (MaxStopPoints > 0 && slPoints > MaxStopPoints)
+            if (MaxStopPips > 0 && slPips > MaxStopPips)
             {
-                if (!LogSignalsOnly) Print($"SKIP ENTRY — SL {slPoints:F2}pts > max {MaxStopPoints:F2}pts");
+                if (!LogSignalsOnly) Print($"SKIP ENTRY — SL {slPips:F1}p > max {MaxStopPips:F1}p");
                 return;
             }
 
-            double slPips = slPoints / Symbol.PipSize;
-            double tpPips = tpPoints / Symbol.PipSize;
             if (slPips <= 0 || tpPips <= 0) return;
 
             double volume = CalculateVolumeSafe(tradeType, slPips);
             if (volume <= 0)
             {
-                if (!LogSignalsOnly) Print($"[{Server.Time:HH:mm}] SKIP — size/margin. SL={slPoints:F2}pts / {slPips:F1}p");
+                if (!LogSignalsOnly) Print($"[{Server.Time:HH:mm}] SKIP — size/margin. SL={slPips:F1}p");
                 return;
             }
 
@@ -676,7 +747,21 @@ namespace cAlgo.Robots
             {
                 _tradesToday++;
                 Print($"[{Server.Time:yyyy-MM-dd HH:mm}] {tradeType.ToString().ToUpper()} OPEN | " +
-                      $"Entry={res.Position.EntryPrice:F2} | SL={slPoints:F2}pts | TP={tpPoints:F2}pts | SLpips={slPips:F1} | TPpips={tpPips:F1} | Vol={volume:F0}");
+                      $"vol={volume:F0} SL={slPips:F1}p TP={tpPips:F1}p | Entry={res.Position.EntryPrice:F5}");
+
+                // FIX: First-trade sizing audit
+                if (!_firstTradeAudited)
+                {
+                    double expectedLoss = Symbol.PipValue * volume * slPips;
+                    double riskMoney = Account.Equity * RiskPercent / 100.0;
+                    double diffPct = Math.Abs(expectedLoss - riskMoney) / Math.Max(riskMoney, 0.01) * 100.0;
+                    Print($"[SIZE-AUDIT] FIRST TRADE: expectedLoss=${expectedLoss:F2} | targetRisk=${riskMoney:F2} | diff={diffPct:F2}%");
+                    if (diffPct > 5.0)
+                    {
+                        Print($"⚠️  SIZE-AUDIT WARNING: expected loss differs from target risk by {diffPct:F2}%. Verify Symbol.PipValue/PipSize for {SymbolName}.");
+                    }
+                    _firstTradeAudited = true;
+                }
             }
             else
             {
@@ -684,52 +769,71 @@ namespace cAlgo.Robots
             }
         }
 
+        // ─────────────────────────────────────────────────────────────
+        //  VOLUME CALCULATION
+        //  FIX: Unified MaxLotsCap handles both old MaxLots and VolumeCap.
+        //  Cap-hit behaviour is explicit (skip-or-cap) and logged.
+        //  FIX: ToNearest rounding instead of Down — prevents systematic under-risk.
+        // ─────────────────────────────────────────────────────────────
         private double CalculateVolumeSafe(TradeType tradeType, double stopLossPips)
         {
-            if (RiskPercent <= 0 || stopLossPips <= 0 || Account.Equity <= 0) return 0;
+            if (RiskPercent <= 0 || stopLossPips <= 0) return 0;
 
-            double rawVolume = 0;
-            try
+            double equity = Account.Equity;
+            if (equity <= 0) return 0;
+
+            double riskMoney = equity * (RiskPercent / 100.0);
+            // BUG FIX v5.1: Symbol.PipValue returns dollars-per-pip per UNIT, not per LOT.
+            // Original code treated it as per-lot → produced lotsRaw inflated by LotSize (~100,000),
+            // which then got silently clamped by MaxLotsCap. Result: every trade was effectively
+            // sized at the cap rather than risk-based. Multiplying by LotSize gives correct per-lot risk.
+            double riskPerLot = stopLossPips * Symbol.PipValue * Symbol.LotSize;
+            if (riskPerLot <= 0) return 0;
+
+            double lotsRaw = riskMoney / riskPerLot;
+            double lotsBeforeCap = lotsRaw;
+            bool capHit = false;
+
+            if (MaxLotsCap > 0 && lotsRaw > MaxLotsCap)
             {
-                rawVolume = Symbol.VolumeForProportionalRisk(
-                    ProportionalAmountType.Equity,
-                    RiskPercent,
-                    stopLossPips,
-                    RoundingMode.Down);
+                if (SkipIfCapHit)
+                {
+                    if (LogSizingDetails)
+                        Print($"[CAP-HIT] lotsRaw={lotsRaw:F3} > MaxLotsCap={MaxLotsCap:F3} | SkipIfCapHit=true → skipping");
+                    return 0;
+                }
+                lotsRaw = MaxLotsCap;
+                capHit = true;
             }
-            catch
-            {
-                rawVolume = 0;
-            }
 
-            if (rawVolume <= 0) return 0;
+            double unitsRaw = lotsRaw * Symbol.LotSize;
+            // FIX: ToNearest instead of Down — prevents systematic under-risking on volume step
+            double unitsFinal = Symbol.NormalizeVolumeInUnits(unitsRaw, RoundingMode.ToNearest);
 
-            double volumeBeforeCap = rawVolume;
-
-            if (VolumeCapUnits > 0)
-                rawVolume = Math.Min(rawVolume, VolumeCapUnits);
-
-            double volume = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
-
-            if (volume < Symbol.VolumeInUnitsMin) return 0;
-            if (volume > Symbol.VolumeInUnitsMax) volume = Symbol.VolumeInUnitsMax;
-
-            if (SkipIfVolumeHitsCap && VolumeCapUnits > 0 && volumeBeforeCap > VolumeCapUnits * 1.001 && volume >= VolumeCapUnits)
-                return 0;
+            if (unitsFinal < Symbol.VolumeInUnitsMin) return 0;
+            if (unitsFinal > Symbol.VolumeInUnitsMax) unitsFinal = Symbol.VolumeInUnitsMax;
 
             double estMargin = 0;
-            try { estMargin = Symbol.GetEstimatedMargin(tradeType, volume); } catch { }
+            try { estMargin = Symbol.GetEstimatedMargin(tradeType, unitsFinal); } catch { }
 
-            if (estMargin > 0 && estMargin > Account.Equity * (MaxMarginUsagePct / 100.0))
+            if (estMargin > 0 && estMargin > equity * (MaxMarginUsagePct / 100.0))
+            {
+                if (LogSizingDetails)
+                    Print($"[MARGIN-SKIP] estMargin={estMargin:F2} > maxAllowed={(equity * MaxMarginUsagePct / 100.0):F2}");
                 return 0;
+            }
 
             if (LogSizingDetails)
             {
-                double riskMoney = Account.Equity * RiskPercent / 100.0;
-                Print($"[SIZE] eq={Account.Equity:F2} risk={riskMoney:F2} SLpips={stopLossPips:F1} rawVol={volumeBeforeCap:F0} finalVol={volume:F0} margin={(estMargin > 0 ? estMargin.ToString("F2") : "n/a")}");
+                double lotsUsed = unitsFinal / Symbol.LotSize;
+                double expectedLoss = Symbol.PipValue * unitsFinal * stopLossPips;
+                string capFlag = capHit ? " [CAPPED]" : "";
+                Print($"[SIZE]{capFlag} eq={equity:F2} risk=${riskMoney:F2} SL={stopLossPips:F1}p " +
+                      $"pipVal={Symbol.PipValue:F4} lotsRaw={lotsBeforeCap:F3} lotsUsed={lotsUsed:F3} " +
+                      $"unitsFinal={unitsFinal:F0} expLoss=${expectedLoss:F2} margin={(estMargin > 0 ? estMargin.ToString("F2") : "n/a")}");
             }
 
-            return volume;
+            return unitsFinal;
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -739,7 +843,7 @@ namespace cAlgo.Robots
         {
             if (DailyLossLimitPct <= 0 || _startOfDayEquity <= 0) return false;
 
-            double lossPercent = (_startOfDayEquity - Account.Equity) / _startOfDayEquity * 100.0;
+            var lossPercent = (_startOfDayEquity - Account.Equity) / _startOfDayEquity * 100.0;
 
             if (lossPercent >= DailyLossLimitPct)
             {
@@ -757,11 +861,32 @@ namespace cAlgo.Robots
         }
 
         // ─────────────────────────────────────────────────────────────
-        //  DAY FILTER / FITNESS
+        //  SESSION CLASSIFIER
+        // ─────────────────────────────────────────────────────────────
+        private bool PassesSessionFilter(DateTime london)
+        {
+            var t = london.TimeOfDay;
+            var asianStart = TimeSpan.FromHours(0);
+            var londonStart = TimeSpan.FromHours(7);
+            var overlapStart = TimeSpan.FromHours(12);
+            var nyStart = TimeSpan.FromHours(17);
+            var nyEnd = TimeSpan.FromHours(21);
+
+            if (t >= asianStart && t < londonStart) return TradeAsian;
+            if (t >= londonStart && t < overlapStart) return TradeLondon;
+            if (t >= overlapStart && t < nyStart) return TradeLondonNyOverlap;
+            if (t >= nyStart && t < nyEnd) return TradeNy;
+
+            return false;
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        //  DAY FILTER
         // ─────────────────────────────────────────────────────────────
         private bool PassesDayFilter(DateTime london)
         {
             if (!UseDayFilter) return true;
+
             switch (london.DayOfWeek)
             {
                 case DayOfWeek.Monday: return TradeMonday;
@@ -773,6 +898,9 @@ namespace cAlgo.Robots
             }
         }
 
+        // ─────────────────────────────────────────────────────────────
+        //  FITNESS — soft penalties, no cliffs
+        // ─────────────────────────────────────────────────────────────
         protected override double GetFitness(GetFitnessArgs args)
         {
             double testYears = BacktestYears > 0 ? BacktestYears : 1;
@@ -783,17 +911,28 @@ namespace cAlgo.Robots
             double tradesPerYear = totalTrades / testYears;
             double winRate = args.WinningTrades / Math.Max(totalTrades, 1);
 
-            if (totalTrades < MinTotalTrades) return -1000000;
-            if (tradesPerYear < MinTradesPerYear) return -1000000;
+            // Hard rejects only for fundamentally broken configs
+            if (totalTrades < 5) return -1000000;
             if (netProfit <= 0) return -1000000;
-            if (ddPct > MaxFitnessDrawdownPct) return -1000000;
 
             double profitScore = Math.Log10(1.0 + netProfit);
             double tradeScore = Math.Sqrt(totalTrades);
             double ddPenalty = Math.Pow(ddPct, 1.45);
             double winBonus = 0.75 + Math.Min(winRate, 0.75);
 
-            return (profitScore * pf * tradeScore * winBonus) / ddPenalty;
+            double baseScore = (profitScore * pf * tradeScore * winBonus) / ddPenalty;
+
+            // Soft penalties
+            double tradeShortfall = Math.Max(0, MinTotalTrades - totalTrades);
+            double tradeShortfallPenalty = 1.0 + (tradeShortfall / Math.Max(MinTotalTrades, 1)) * 5.0;
+
+            double tpyShortfall = Math.Max(0, MinTradesPerYear - tradesPerYear);
+            double tpyShortfallPenalty = 1.0 + (tpyShortfall / Math.Max(MinTradesPerYear, 1)) * 5.0;
+
+            double ddOverage = Math.Max(0, ddPct - MaxFitnessDrawdownPct);
+            double ddOveragePenalty = 1.0 + (ddOverage / Math.Max(MaxFitnessDrawdownPct, 1)) * 10.0;
+
+            return baseScore / (tradeShortfallPenalty * tpyShortfallPenalty * ddOveragePenalty);
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -808,32 +947,13 @@ namespace cAlgo.Robots
             _startOfDayEquity = Account.Equity;
             _circuitBroken = false;
             _partialClosedPosId = -1;
+            _beShiftedPosId = -1;
 
             Print($"NEW LONDON DAY {london:dd-MMM-yyyy ddd}");
         }
 
-        private DateTime LondonNow()
-        {
-            var utc = Server.Time;
-            int offset = IsBST(utc) ? 1 : 0;
-            return utc.AddHours(offset);
-        }
-
-        private bool IsBST(DateTime utc)
-        {
-            if (utc.Month < 3 || utc.Month > 10) return false;
-            if (utc.Month > 3 && utc.Month < 10) return true;
-
-            int daysInMonth = DateTime.DaysInMonth(utc.Year, utc.Month);
-            int lastSunday = daysInMonth;
-            while (new DateTime(utc.Year, utc.Month, lastSunday).DayOfWeek != DayOfWeek.Sunday)
-                lastSunday--;
-
-            if (utc.Month == 3)
-                return utc.Day > lastSunday || (utc.Day == lastSunday && utc.Hour >= 1);
-            else
-                return utc.Day < lastSunday || (utc.Day == lastSunday && utc.Hour < 1);
-        }
+        private DateTime LondonNow() =>
+            TimeZoneInfo.ConvertTimeFromUtc(Server.Time, LondonTz);
 
         private bool InTradeHours(DateTime london)
         {
@@ -844,34 +964,14 @@ namespace cAlgo.Robots
                 return true;
 
             var t = london.TimeOfDay;
-
-            bool inWindow = start <= end
-                ? t >= start && t <= end
-                : t >= start || t <= end;
-
-            if (!inWindow) return false;
-
-            if (NoTradeFirstMinutes > 0)
-            {
-                var openGuardEnd = start.Add(TimeSpan.FromMinutes(NoTradeFirstMinutes));
-
-                if (start <= end)
-                {
-                    if (t >= start && t < openGuardEnd) return false;
-                }
-                else
-                {
-                    if (t >= start && t < openGuardEnd) return false;
-                }
-            }
-
-            return true;
+            return t >= start && t <= end;
         }
 
         private bool IndicatorsReady()
         {
             int need = Math.Max(Math.Max(AtrAvgPeriod, AtrPeriod), Math.Max(TrailingAtrPeriod, AdxPeriod));
-            bool mainReady = Bars.Count > need + SwingLeft + SwingRight + 20;
+            int swingNeed = SwingLeft + SwingRight + 10;
+            bool mainReady = Bars.Count > need + swingNeed + 10;
 
             if (!mainReady) return false;
 
@@ -884,26 +984,20 @@ namespace cAlgo.Robots
         private bool SafetyOk()
         {
             if (!UseSpreadFilter) return true;
-
-            double spreadPoints = Symbol.Ask - Symbol.Bid;
-            bool ok = spreadPoints <= MaxSpreadPoints;
-
+            double spreadPips = (Symbol.Ask - Symbol.Bid) / Symbol.PipSize;
+            bool ok = spreadPips <= MaxSpreadPips;
             if (!ok && LogSkipReasons)
-                Print($"SKIP — spread {spreadPoints:F2}pts > max {MaxSpreadPoints:F2}pts");
-
+                Print($"SKIP — spread {spreadPips:F2}p > max {MaxSpreadPips:F2}p");
             return ok;
         }
 
-        private bool HasOpenPosition()
-        {
-            return Positions.Any(p => p.SymbolName == SymbolName && p.Label == BotLabel);
-        }
+        private bool HasOpenPosition() =>
+            Positions.Any(p => p.SymbolName == SymbolName && p.Label == BotLabel);
 
         private void OnPositionClosed(PositionClosedEventArgs args)
         {
-            if (args.Position.SymbolName != SymbolName || args.Position.Label != BotLabel)
-                return;
-
+            if (args.Position.SymbolName != SymbolName) return;
+            if (args.Position.Label != BotLabel) return;
             _lastExitTime = Server.Time;
         }
 

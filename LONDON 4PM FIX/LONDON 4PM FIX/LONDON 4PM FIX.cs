@@ -52,7 +52,7 @@ namespace cAlgo.Robots
         [Parameter("Entry End (HH:mm London)", DefaultValue = "16:05")]
         public string EntryEndText { get; set; }
 
-        [Parameter("Force Exit (HH:mm London)", DefaultValue = "16:45")]
+        [Parameter("Force Exit (HH:mm London)", DefaultValue = "16:45", Group = "Exit")]
         public string ForceExitText { get; set; }
 
         [Parameter("ATR Period", DefaultValue = 14, MinValue = 2)]
@@ -318,7 +318,16 @@ namespace cAlgo.Robots
                 ? actualEntry + (riskDistancePrice * TakeProfitR)
                 : actualEntry - (riskDistancePrice * TakeProfitR);
 
-            ModifyPosition(position, actualStop, actualTp);
+            try 
+            {
+                ModifyPosition(position, actualStop, actualTp);
+                Print("SL={0:F5} TP={1:F5} set successfully", actualStop, actualTp);
+            }
+                catch (Exception ex)
+            {
+                Print("ERROR: Failed to modify position: {0}", ex.Message);
+                return;
+            }
 
             _tradeTakenToday = true;
 
