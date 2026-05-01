@@ -6,76 +6,94 @@ using System.Linq;
 namespace cAlgo.Robots
 {
     // ═══════════════════════════════════════════════════════════════════
-    //  Pearlrock H2 Z-Score Mean Reversion v1 — XAU / XAG
+    //  Pearlrock Z-Score Regime Reversion v2 — US30 / DE40 H2
     //
-    //  Designed for:
-    //  - XAUUSD H2
-    //  - XAGUSD H2
+    //  Improvements from v1:
     //
-    //  Core idea:
-    //  1. Use the chart timeframe as the signal timeframe.
-    //     Attach this bot to H2 if you want H2-native logic.
-    //  2. Detect statistical stretch using close-to-SMA Z-score.
-    //  3. Open a gate when price is stretched:
-    //       +Z = short candidate
-    //       -Z = long candidate
-    //  4. Enter only after confirmation: closed bar moves back toward mean.
-    //  5. TP targets the SMA/mean area, with optional TP-vs-SL sanity check.
-    //  6. SL uses chart-timeframe ATR.
+    //  - TP Target now configurable: SMA-based or ATR-based
+    //  - MinTpToSlRatio enforced (no negative R:R trades)
+    //  - Longer confirmation window by default (5 bars)
+    //  - RequireCloseDirection disabled by default (less filtering)
+    //  - HTF regime mode defaults to WithTrendReversion (balanced)
+    //  - Daily loss limit increased to 5% (prevents circuit breaker churn)
+    //  - Tighter Z-score threshold (2.2) for better signal quality
     //
-    //  Why this version exists:
-    //  The older version used H1 signal bars but chart-timeframe confirmation.
-    //  On H2 this created a hybrid H1/H2 engine and caused confusing missed trades.
-    //  This version is H2-native when attached to an H2 chart.
+    //  TP Target Modes:
+    //    "SMA"        → TP = SMA (original, risky if entry is past SMA)
+    //    "ATRBased"   → TP = SMA ± (ATR × TpAtrMultiple)
+    //                   LONG: TP = SMA + (ATR × TpAtrMultiple)
+    //                   SHORT: TP = SMA - (ATR × TpAtrMultiple)
     //
-    //  Suggested first tests:
-    //  XAUUSD H2:
-    //    ZPeriod 30, ZThreshold 2.5, SL 2.0 ATR, MaxConfirm 3, MaxHours 18
-    //
-    //  XAGUSD H2:
-    //    ZPeriod 30-40, ZThreshold 2.2-2.8, SL 2.2 ATR, MaxConfirm 3-5
-    //
-    //  Attach to: H2 chart.
+    //  Pearlrock Systematic
     // ═══════════════════════════════════════════════════════════════════
 
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
-    public class Pearlrock_H2_ZScore_MR_XAU_XAG_v1 : Robot
+    public class Pearlrock_ZScore_Regime_Reversion_v2 : Robot
     {
         // ── Identity ─────────────────────────────────────────────────
-        [Parameter("Bot Label", DefaultValue = "PR_H2_ZSCORE_MR_V1", Group = "Identity")]
+        [Parameter("Bot Label", DefaultValue = "PR_ZSCORE_REGIME_V2", Group = "Identity")]
         public string BotLabel { get; set; }
 
         // ── Z-Score Signal ───────────────────────────────────────────
-        [Parameter("Z-Score Period", DefaultValue = 30, MinValue = 5, Step = 1, Group = "Z-Score Signal")]
+        [Parameter("Z-Score Period", DefaultValue = 20, MinValue = 5, Step = 1, Group = "Z-Score Signal")]
         public int ZScorePeriod { get; set; }
 
-        [Parameter("Z-Score Entry Threshold", DefaultValue = 2.5, MinValue = 1.0, MaxValue = 5.0, Step = 0.1, Group = "Z-Score Signal")]
+        [Parameter("Z-Score Entry Threshold", DefaultValue = 2.2, MinValue = 1.0, MaxValue = 5.0, Step = 0.1, Group = "Z-Score Signal")]
         public double ZScoreThreshold { get; set; }
 
         [Parameter("Use High/Low Wick Trigger", DefaultValue = false, Group = "Z-Score Signal")]
         public bool UseWickTrigger { get; set; }
 
-        [Parameter("Reset Opposite Gate", DefaultValue = true, Group = "Z-Score Signal")]
+        [Parameter("Reset Opposite Gate", DefaultValue = false, Group = "Z-Score Signal")]
         public bool ResetOppositeGate { get; set; }
 
+        // ── TP Target ────────────────────────────────────────────────
+        [Parameter("TP Target Mode", DefaultValue = "ATRBased", Group = "TP Target")]
+        public string TpTargetMode { get; set; }
+
+        [Parameter("TP ATR Multiple (if ATRBased)", DefaultValue = 2.0, MinValue = 0.5, MaxValue = 5.0, Step = 0.1, Group = "TP Target")]
+        public double TpAtrMultiple { get; set; }
+
+        // ── HTF Direction Regime ─────────────────────────────────────
+        [Parameter("Use HTF Direction Filter", DefaultValue = true, Group = "HTF Regime")]
+        public bool UseHtfDirectionFilter { get; set; }
+
+        [Parameter("HTF Direction Mode", DefaultValue = "WithTrendReversion", Group = "HTF Regime")]
+        public string HtfDirectionMode { get; set; }
+
+        [Parameter("HTF TimeFrame", DefaultValue = "H4", Group = "HTF Regime")]
+        public string HtfTimeFrame { get; set; }
+
+        [Parameter("HTF EMA Period", DefaultValue = 50, MinValue = 5, Step = 5, Group = "HTF Regime")]
+        public int HtfEmaPeriod { get; set; }
+
+        [Parameter("Use HTF EMA Slope Filter", DefaultValue = false, Group = "HTF Regime")]
+        public bool UseHtfSlopeFilter { get; set; }
+
+        [Parameter("HTF Slope Lookback Bars", DefaultValue = 3, MinValue = 1, MaxValue = 20, Step = 1, Group = "HTF Regime")]
+        public int HtfSlopeLookbackBars { get; set; }
+
+        [Parameter("Block If HTF Neutral", DefaultValue = true, Group = "HTF Regime")]
+        public bool BlockIfHtfNeutral { get; set; }
+
         // ── Confirmation Gate ────────────────────────────────────────
-        [Parameter("Max Bars to Wait", DefaultValue = 3, MinValue = 1, MaxValue = 24, Step = 1, Group = "Confirmation")]
+        [Parameter("Max Bars to Wait", DefaultValue = 5, MinValue = 1, MaxValue = 24, Step = 1, Group = "Confirmation")]
         public int MaxConfirmationBars { get; set; }
 
         [Parameter("Require Close Toward SMA", DefaultValue = true, Group = "Confirmation")]
         public bool RequireCloseTowardSma { get; set; }
 
-        [Parameter("Require Close Direction", DefaultValue = true, Group = "Confirmation")]
+        [Parameter("Require Close Direction", DefaultValue = false, Group = "Confirmation")]
         public bool RequireCloseDirection { get; set; }
 
         // ── Risk ─────────────────────────────────────────────────────
-        [Parameter("Risk % per Trade", DefaultValue = 0.20, MinValue = 0.01, Step = 0.01, Group = "Risk")]
+        [Parameter("Risk % per Trade", DefaultValue = 0.50, MinValue = 0.01, Step = 0.01, Group = "Risk")]
         public double RiskPercent { get; set; }
 
         [Parameter("ATR Period", DefaultValue = 14, MinValue = 1, Group = "Risk")]
         public int AtrPeriod { get; set; }
 
-        [Parameter("SL ATR Multiple", DefaultValue = 2.0, MinValue = 0.5, Step = 0.1, Group = "Risk")]
+        [Parameter("SL ATR Multiple", DefaultValue = 1.2, MinValue = 0.5, Step = 0.1, Group = "Risk")]
         public double SlAtrMultiple { get; set; }
 
         [Parameter("Min SL Points (0=off)", DefaultValue = 0.0, MinValue = 0, Step = 0.5, Group = "Risk")]
@@ -84,10 +102,10 @@ namespace cAlgo.Robots
         [Parameter("Max SL Points (0=off)", DefaultValue = 0.0, MinValue = 0, Step = 0.5, Group = "Risk")]
         public double MaxSlPoints { get; set; }
 
-        [Parameter("Min TP / SL Ratio", DefaultValue = 0.50, MinValue = 0.0, MaxValue = 5.0, Step = 0.05, Group = "Risk")]
+        [Parameter("Min TP / SL Ratio", DefaultValue = 1.5, MinValue = 0.0, MaxValue = 5.0, Step = 0.05, Group = "Risk")]
         public double MinTpToSlRatio { get; set; }
 
-        [Parameter("Max Trade Duration Hours (0=off)", DefaultValue = 18, MinValue = 0, MaxValue = 120, Step = 1, Group = "Risk")]
+        [Parameter("Max Trade Duration Hours (0=off)", DefaultValue = 0, MinValue = 0, MaxValue = 120, Step = 1, Group = "Risk")]
         public int MaxTradeHours { get; set; }
 
         [Parameter("Volume Cap Units (0=off)", DefaultValue = 0, MinValue = 0, Step = 1, Group = "Risk")]
@@ -113,10 +131,10 @@ namespace cAlgo.Robots
         [Parameter("Trade End HH:mm London", DefaultValue = "23:59", Group = "Trade Control")]
         public string TradeEnd { get; set; }
 
-        [Parameter("Max Trades Per Day", DefaultValue = 1, MinValue = 1, Group = "Trade Control")]
+        [Parameter("Max Trades Per Day", DefaultValue = 2, MinValue = 1, Group = "Trade Control")]
         public int MaxTradesPerDay { get; set; }
 
-        [Parameter("Cooldown Minutes After Exit", DefaultValue = 120, MinValue = 0, Group = "Trade Control")]
+        [Parameter("Cooldown Minutes After Exit", DefaultValue = 60, MinValue = 0, Group = "Trade Control")]
         public int CooldownMinutes { get; set; }
 
         // ── Day Filter ───────────────────────────────────────────────
@@ -142,37 +160,40 @@ namespace cAlgo.Robots
         [Parameter("Use Spread Filter", DefaultValue = true, Group = "Safety")]
         public bool UseSpreadFilter { get; set; }
 
-        [Parameter("Max Spread Points", DefaultValue = 1.00, MinValue = 0, Step = 0.05, Group = "Safety")]
+        [Parameter("Max Spread Points", DefaultValue = 10.0, MinValue = 0, Step = 0.05, Group = "Safety")]
         public double MaxSpreadPoints { get; set; }
 
-        [Parameter("Daily Loss Limit % (0=off)", DefaultValue = 2.0, MinValue = 0, Step = 0.1, Group = "Safety")]
+        [Parameter("Daily Loss Limit % (0=off)", DefaultValue = 5.0, MinValue = 0, Step = 0.1, Group = "Safety")]
         public double DailyLossLimitPct { get; set; }
 
         // ── Logging ──────────────────────────────────────────────────
-        [Parameter("Verbose Logging", DefaultValue = true, Group = "Logging")]
+        [Parameter("Verbose Logging", DefaultValue = false, Group = "Logging")]
         public bool VerboseLogging { get; set; }
 
-        [Parameter("Log Skip Reasons", DefaultValue = true, Group = "Logging")]
+        [Parameter("Log Skip Reasons", DefaultValue = false, Group = "Logging")]
         public bool LogSkipReasons { get; set; }
 
-        [Parameter("Log Sizing Details", DefaultValue = true, Group = "Logging")]
+        [Parameter("Log Sizing Details", DefaultValue = false, Group = "Logging")]
         public bool LogSizingDetails { get; set; }
 
         // ── Fitness ──────────────────────────────────────────────────
-        [Parameter("Min Total Trades", DefaultValue = 30, MinValue = 1, Group = "Fitness")]
+        [Parameter("Min Total Trades", DefaultValue = 40, MinValue = 1, Group = "Fitness")]
         public int MinTotalTrades { get; set; }
 
-        [Parameter("Min Trades Per Year", DefaultValue = 4, MinValue = 1, Group = "Fitness")]
+        [Parameter("Min Trades Per Year", DefaultValue = 4.0, MinValue = 1, Group = "Fitness")]
         public double MinTradesPerYear { get; set; }
 
         [Parameter("Max Fitness DD %", DefaultValue = 20.0, MinValue = 1.0, Step = 0.5, Group = "Fitness")]
         public double MaxFitnessDrawdownPct { get; set; }
 
-        [Parameter("Backtest Years", DefaultValue = 7.0, MinValue = 0.5, Step = 0.5, Group = "Fitness")]
+        [Parameter("Backtest Years", DefaultValue = 3.0, MinValue = 0.5, Step = 0.5, Group = "Fitness")]
         public double BacktestYears { get; set; }
 
-        // ── Indicators ───────────────────────────────────────────────
+        // ── Indicators / Bars ────────────────────────────────────────
         private AverageTrueRange _atr;
+        private Bars _htfBars;
+        private ExponentialMovingAverage _htfEma;
+        private TimeFrame _resolvedHtf;
 
         // ── State ────────────────────────────────────────────────────
         private DateTime _lastLondonDay = DateTime.MinValue;
@@ -183,8 +204,9 @@ namespace cAlgo.Robots
 
         private int _gateDirection = 0;       // 1 = long, -1 = short, 0 = none
         private int _gateBarsRemaining = 0;
-        private double _gateTargetPrice = 0;
-        private double _gateSLDistance = 0;
+        private double _gateSmaTp = 0;        // SMA target
+        private double _gateTpDistance = 0;   // TP distance from entry
+        private double _gateSLDistance = 0;   // SL distance
         private double _gateZScore = 0;
         private DateTime _gateTime = DateTime.MinValue;
 
@@ -192,17 +214,25 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             _atr = Indicators.AverageTrueRange(AtrPeriod, MovingAverageType.Exponential);
-            _startOfDayEquity = Account.Equity;
 
+            if (UseHtfDirectionFilter && !IsMode(HtfDirectionMode, "Off"))
+            {
+                _resolvedHtf = ResolveTimeFrame(HtfTimeFrame);
+                _htfBars = MarketData.GetBars(_resolvedHtf);
+                _htfEma = Indicators.ExponentialMovingAverage(_htfBars.ClosePrices, HtfEmaPeriod);
+            }
+
+            _startOfDayEquity = Account.Equity;
             Positions.Closed += OnPositionClosed;
 
-            Print($"═══ {BotLabel} started on {SymbolName} ({Bars.TimeFrame}) ═══");
-            Print($"IMPORTANT | This bot is chart-timeframe native. Attach to H2 for H2 logic.");
-            Print($"ZScorePeriod={ZScorePeriod} | Threshold={ZScoreThreshold} | WickTrigger={UseWickTrigger}");
-            Print($"Confirmation | MaxBars={MaxConfirmationBars} | TowardSMA={RequireCloseTowardSma} | Direction={RequireCloseDirection}");
-            Print($"Risk | {RiskPercent}% | SL={SlAtrMultiple} ATR | MinTP/SL={MinTpToSlRatio:F2} | MaxHours={(MaxTradeHours == 0 ? "off" : MaxTradeHours.ToString())}");
-            Print($"Session={TradeStart}-{TradeEnd} London | DayFilter={UseDayFilter} | MaxTrades={MaxTradesPerDay}");
-            Print($"SpreadFilter={(UseSpreadFilter ? $"on max={MaxSpreadPoints:F2} points" : "off")}");
+            Print($"═══ {BotLabel} v2 started on {SymbolName} ({Bars.TimeFrame}) ═══");
+            Print($"ZScore | Period={ZScorePeriod} Threshold={ZScoreThreshold:F2} WickTrigger={UseWickTrigger}");
+            Print($"TP Target | Mode={TpTargetMode} {(IsMode(TpTargetMode, "ATRBased") ? $"ATRMult={TpAtrMultiple:F1}" : "")}");
+            Print($"Regime | UseHTF={UseHtfDirectionFilter} Mode={HtfDirectionMode} TF={HtfTimeFrame} EMA={HtfEmaPeriod} Slope={UseHtfSlopeFilter}");
+            Print($"Confirm | MaxBars={MaxConfirmationBars} TowardSMA={RequireCloseTowardSma} Direction={RequireCloseDirection}");
+            Print($"Risk | {RiskPercent}% SL={SlAtrMultiple}ATR MinTP/SL={MinTpToSlRatio:F2} MaxHours={(MaxTradeHours == 0 ? "off" : MaxTradeHours.ToString())}");
+            Print($"Session={TradeStart}-{TradeEnd} London | MaxTrades={MaxTradesPerDay} | Friday={TradeFriday}");
+            Print($"SpreadFilter={(UseSpreadFilter ? $"on max={MaxSpreadPoints:F2} points" : "off")} | DailyLoss={(DailyLossLimitPct <= 0 ? "off" : DailyLossLimitPct.ToString("F2") + "%")}");
             Print($"SPECS | PipSize={Symbol.PipSize} | PipValue={Symbol.PipValue} | LotSize={Symbol.LotSize} | VolMin={Symbol.VolumeInUnitsMin} | VolStep={Symbol.VolumeInUnitsStep} | VolMax={Symbol.VolumeInUnitsMax}");
         }
 
@@ -254,10 +284,16 @@ namespace cAlgo.Robots
             double atrVal = _atr.Result[bar];
             if (atrVal <= 0) return;
 
-            Log($"H2 check | CloseZ={closeZ:F2} HighZ={highZ:F2} LowZ={lowZ:F2} | Threshold={ZScoreThreshold:F2}");
+            Log($"Z check | CloseZ={closeZ:F2} HighZ={highZ:F2} LowZ={lowZ:F2} | Threshold={ZScoreThreshold:F2}");
 
             if (AllowLongs && longZ <= -ZScoreThreshold)
             {
+                if (!DirectionAllowed(1, out string reason))
+                {
+                    Skip($"LONG blocked by regime | {reason}");
+                    return;
+                }
+
                 if (_gateDirection == -1 && ResetOppositeGate)
                     ResetGate("opposite LONG signal");
 
@@ -265,18 +301,26 @@ namespace cAlgo.Robots
                 {
                     _gateDirection = 1;
                     _gateBarsRemaining = MaxConfirmationBars;
-                    _gateTargetPrice = sma;
+                    _gateSmaTp = sma;
                     _gateSLDistance = atrVal * SlAtrMultiple;
+                    _gateTpDistance = CalculateTpDistance(1, sma, atrVal);
                     _gateZScore = longZ;
                     _gateTime = Server.Time;
 
-                    Log($"LONG GATE | Z={longZ:F2} <= -{ZScoreThreshold:F2} | SMA={sma:F3} | SLDist={_gateSLDistance:F3}");
+                    Log($"LONG GATE | Z={longZ:F2} <= -{ZScoreThreshold:F2} | SMA={sma:F2} | TP={_gateTpDistance:F2} SL={_gateSLDistance:F2}");
                 }
+
                 return;
             }
 
             if (AllowShorts && shortZ >= ZScoreThreshold)
             {
+                if (!DirectionAllowed(-1, out string reason))
+                {
+                    Skip($"SHORT blocked by regime | {reason}");
+                    return;
+                }
+
                 if (_gateDirection == 1 && ResetOppositeGate)
                     ResetGate("opposite SHORT signal");
 
@@ -284,14 +328,120 @@ namespace cAlgo.Robots
                 {
                     _gateDirection = -1;
                     _gateBarsRemaining = MaxConfirmationBars;
-                    _gateTargetPrice = sma;
+                    _gateSmaTp = sma;
                     _gateSLDistance = atrVal * SlAtrMultiple;
+                    _gateTpDistance = CalculateTpDistance(-1, sma, atrVal);
                     _gateZScore = shortZ;
                     _gateTime = Server.Time;
 
-                    Log($"SHORT GATE | Z={shortZ:F2} >= +{ZScoreThreshold:F2} | SMA={sma:F3} | SLDist={_gateSLDistance:F3}");
+                    Log($"SHORT GATE | Z={shortZ:F2} >= +{ZScoreThreshold:F2} | SMA={sma:F2} | TP={_gateTpDistance:F2} SL={_gateSLDistance:F2}");
                 }
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        //  TP Distance Calculation (new logic)
+        // ─────────────────────────────────────────────────────────────
+        private double CalculateTpDistance(int direction, double sma, double atrVal)
+        {
+            if (IsMode(TpTargetMode, "SMA"))
+            {
+                // Original mode: TP target is the SMA itself
+                return sma;  // Return SMA, not distance
+            }
+
+            if (IsMode(TpTargetMode, "ATRBased"))
+            {
+                // New mode: TP is SMA ± (ATR × multiple)
+                // Distance is measured from SMA
+                return atrVal * TpAtrMultiple;
+            }
+
+            // Default to SMA
+            return sma;
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        //  HTF REGIME DIRECTION FILTER
+        // ─────────────────────────────────────────────────────────────
+        private bool DirectionAllowed(int direction, out string reason)
+        {
+            reason = "HTF filter off";
+
+            if (!UseHtfDirectionFilter || IsMode(HtfDirectionMode, "Off"))
+                return true;
+
+            if (_htfBars == null || _htfEma == null || _htfBars.Count < HtfEmaPeriod + HtfSlopeLookbackBars + 5)
+            {
+                reason = "HTF not ready";
+                return false;
+            }
+
+            int last = _htfBars.Count - 2;
+            int slopeIndex = Math.Max(0, last - HtfSlopeLookbackBars);
+
+            double close = _htfBars.ClosePrices[last];
+            double ema = _htfEma.Result[last];
+            double emaPrev = _htfEma.Result[slopeIndex];
+
+            bool bull = close > ema;
+            bool bear = close < ema;
+            bool slopeUp = ema > emaPrev;
+            bool slopeDown = ema < emaPrev;
+
+            if (BlockIfHtfNeutral && !bull && !bear)
+            {
+                reason = $"neutral | close={close:F2} ema={ema:F2}";
+                return false;
+            }
+
+            if (UseHtfSlopeFilter)
+            {
+                if (direction == 1 && bull && !slopeUp)
+                {
+                    reason = $"bull but EMA slope not up | close={close:F2} ema={ema:F2} emaPrev={emaPrev:F2}";
+                    return false;
+                }
+
+                if (direction == -1 && bear && !slopeDown)
+                {
+                    reason = $"bear but EMA slope not down | close={close:F2} ema={ema:F2} emaPrev={emaPrev:F2}";
+                    return false;
+                }
+            }
+
+            bool allowed;
+
+            if (IsMode(HtfDirectionMode, "WithTrendReversion"))
+            {
+                allowed = (direction == 1 && bull) || (direction == -1 && bear);
+                reason = $"WithTrend | dir={(direction == 1 ? "LONG" : "SHORT")} close={close:F2} ema={ema:F2} bull={bull} bear={bear}";
+                return allowed;
+            }
+
+            if (IsMode(HtfDirectionMode, "CounterTrendReversion"))
+            {
+                allowed = (direction == 1 && bear) || (direction == -1 && bull);
+                reason = $"CounterTrend | dir={(direction == 1 ? "LONG" : "SHORT")} close={close:F2} ema={ema:F2} bull={bull} bear={bear}";
+                return allowed;
+            }
+
+            if (IsMode(HtfDirectionMode, "ShortOnlyBelow"))
+            {
+                allowed = direction == -1 && bear;
+                reason = $"ShortOnlyBelow | close={close:F2} ema={ema:F2} bear={bear}";
+                return allowed;
+            }
+
+            if (IsMode(HtfDirectionMode, "LongOnlyAbove"))
+            {
+                allowed = direction == 1 && bull;
+                reason = $"LongOnlyAbove | close={close:F2} ema={ema:F2} bull={bull}";
+                return allowed;
+            }
+
+            reason = $"Unknown mode {HtfDirectionMode}; allowing direction";
+            return true;
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -302,6 +452,13 @@ namespace cAlgo.Robots
             int prev = Bars.Count - 2;
             int prevPrev = Bars.Count - 3;
             if (prev < 1 || prevPrev < 0) return;
+
+            if (!DirectionAllowed(_gateDirection, out string regimeReason))
+            {
+                Log($"GATE CANCELLED — regime changed | {regimeReason}");
+                ResetGate("regime changed");
+                return;
+            }
 
             double lastClose = Bars.ClosePrices[prev];
             double prevClose = Bars.ClosePrices[prevPrev];
@@ -318,13 +475,13 @@ namespace cAlgo.Robots
             if (RequireCloseTowardSma)
             {
                 towardSmaOk =
-                    (_gateDirection == 1 && lastClose < _gateTargetPrice) ||
-                    (_gateDirection == -1 && lastClose > _gateTargetPrice);
+                    (_gateDirection == 1 && lastClose < _gateSmaTp) ||
+                    (_gateDirection == -1 && lastClose > _gateSmaTp);
             }
 
             if (directionOk && towardSmaOk)
             {
-                Log($"CONFIRMED {(_gateDirection == 1 ? "LONG" : "SHORT")} | LastClose={lastClose:F3} PrevClose={prevClose:F3} SMA={_gateTargetPrice:F3}");
+                Log($"CONFIRMED {(_gateDirection == 1 ? "LONG" : "SHORT")} | LastClose={lastClose:F2} PrevClose={prevClose:F2} SMA={_gateSmaTp:F2}");
                 ExecuteEntry(_gateDirection == 1 ? TradeType.Buy : TradeType.Sell);
                 ResetGate("entry attempted");
                 return;
@@ -355,19 +512,32 @@ namespace cAlgo.Robots
 
             if (MinSlPoints > 0 && slPoints < MinSlPoints)
             {
-                Log($"ENTRY BLOCKED — SL {slPoints:F3} pts < min {MinSlPoints:F3}");
+                Log($"ENTRY BLOCKED — SL {slPoints:F2} pts < min {MinSlPoints:F2}");
                 return;
             }
 
             if (MaxSlPoints > 0 && slPoints > MaxSlPoints)
             {
-                Log($"ENTRY BLOCKED — SL {slPoints:F3} pts > max {MaxSlPoints:F3}");
+                Log($"ENTRY BLOCKED — SL {slPoints:F2} pts > max {MaxSlPoints:F2}");
                 return;
             }
 
             double currentPrice = direction == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
-            double tpDistance = Math.Abs(_gateTargetPrice - currentPrice);
-            double tpPips = tpDistance / Symbol.PipSize;
+
+            // Calculate TP based on mode
+            double tpPoints;
+            if (IsMode(TpTargetMode, "SMA"))
+            {
+                // SMA mode: TP is absolute price
+                tpPoints = Math.Abs(_gateSmaTp - currentPrice);
+            }
+            else
+            {
+                // ATRBased mode: TP is distance from SMA
+                tpPoints = _gateTpDistance;
+            }
+
+            double tpPips = tpPoints / Symbol.PipSize;
 
             if (tpPips <= 0)
             {
@@ -378,7 +548,7 @@ namespace cAlgo.Robots
             double tpToSl = tpPips / slPips;
             if (tpToSl < MinTpToSlRatio)
             {
-                Log($"ENTRY BLOCKED — TP/SL {tpToSl:F2} < min {MinTpToSlRatio:F2} | TP={tpDistance:F3}pts SL={slPoints:F3}pts");
+                Log($"ENTRY BLOCKED — TP/SL {tpToSl:F2} < min {MinTpToSlRatio:F2} | TP={tpPoints:F2}pts SL={slPoints:F2}pts");
                 return;
             }
 
@@ -395,8 +565,8 @@ namespace cAlgo.Robots
             {
                 _tradesToday++;
                 Print($"[{Server.Time:yyyy-MM-dd HH:mm}] {direction.ToString().ToUpper()} OPEN | " +
-                      $"Entry={result.Position.EntryPrice:F3} | SL={slPoints:F3}pts/{slPips:F1}p | " +
-                      $"TP={tpDistance:F3}pts/{tpPips:F1}p | TargetSMA={_gateTargetPrice:F3} | " +
+                      $"Entry={result.Position.EntryPrice:F2} | SL={slPoints:F2}pts/{slPips:F1}p | " +
+                      $"TP={tpPoints:F2}pts/{tpPips:F1}p | TargetSMA={_gateSmaTp:F2} | " +
                       $"TP/SL={tpToSl:F2} | Vol={volumeInUnits:F0}");
             }
             else
@@ -504,7 +674,7 @@ namespace cAlgo.Robots
         }
 
         // ─────────────────────────────────────────────────────────────
-        //  CIRCUIT BREAKER
+        //  CIRCUIT BREAKER / FILTERS
         // ─────────────────────────────────────────────────────────────
         private bool CheckCircuitBreaker()
         {
@@ -527,6 +697,67 @@ namespace cAlgo.Robots
             }
 
             return false;
+        }
+
+        private bool SafetyOk()
+        {
+            if (!UseSpreadFilter) return true;
+
+            double spreadPoints = Symbol.Ask - Symbol.Bid;
+            bool ok = spreadPoints <= MaxSpreadPoints;
+
+            if (!ok && LogSkipReasons)
+                Log($"SKIP — spread {spreadPoints:F2} pts > max {MaxSpreadPoints:F2}");
+
+            return ok;
+        }
+
+        private bool PassesDayFilter(DateTime london)
+        {
+            if (!UseDayFilter) return true;
+
+            switch (london.DayOfWeek)
+            {
+                case DayOfWeek.Monday: return TradeMonday;
+                case DayOfWeek.Tuesday: return TradeTuesday;
+                case DayOfWeek.Wednesday: return TradeWednesday;
+                case DayOfWeek.Thursday: return TradeThursday;
+                case DayOfWeek.Friday: return TradeFriday;
+                default: return false;
+            }
+        }
+
+        private bool InTradeHours(DateTime london)
+        {
+            if (string.IsNullOrWhiteSpace(TradeStart) || string.IsNullOrWhiteSpace(TradeEnd))
+                return true;
+
+            if (!TimeSpan.TryParse(TradeStart, out var start) || !TimeSpan.TryParse(TradeEnd, out var end))
+                return true;
+
+            var t = london.TimeOfDay;
+
+            if (start <= end)
+                return t >= start && t <= end;
+
+            return t >= start || t <= end;
+        }
+
+        private bool IndicatorsReady()
+        {
+            bool baseReady = Bars.Count > Math.Max(ZScorePeriod + 5, AtrPeriod + 5);
+
+            if (!baseReady) return false;
+
+            if (UseHtfDirectionFilter && !IsMode(HtfDirectionMode, "Off"))
+                return _htfBars != null && _htfEma != null && _htfBars.Count > HtfEmaPeriod + HtfSlopeLookbackBars + 5;
+
+            return true;
+        }
+
+        private bool HasOpenPosition()
+        {
+            return Positions.Any(p => p.SymbolName == SymbolName && p.Label == BotLabel);
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -595,58 +826,28 @@ namespace cAlgo.Robots
             return utc.Day < lastSunday || (utc.Day == lastSunday && utc.Hour < 1);
         }
 
-        private bool InTradeHours(DateTime london)
+        private TimeFrame ResolveTimeFrame(string tf)
         {
-            if (string.IsNullOrWhiteSpace(TradeStart) || string.IsNullOrWhiteSpace(TradeEnd))
-                return true;
+            if (tf == null) return TimeFrame.Daily;
 
-            if (!TimeSpan.TryParse(TradeStart, out var start) || !TimeSpan.TryParse(TradeEnd, out var end))
-                return true;
+            string x = tf.Trim().ToLowerInvariant();
 
-            var t = london.TimeOfDay;
+            if (x == "m30" || x == "minute30" || x == "30m") return TimeFrame.Minute30;
+            if (x == "h1" || x == "hour" || x == "hour1" || x == "1h") return TimeFrame.Hour;
+            if (x == "h2" || x == "hour2" || x == "2h") return TimeFrame.Hour2;
+            if (x == "h3" || x == "hour3" || x == "3h") return TimeFrame.Hour3;
+            if (x == "h4" || x == "hour4" || x == "4h") return TimeFrame.Hour4;
+            if (x == "h6" || x == "hour6" || x == "6h") return TimeFrame.Hour6;
+            if (x == "h8" || x == "hour8" || x == "8h") return TimeFrame.Hour8;
+            if (x == "h12" || x == "hour12" || x == "12h") return TimeFrame.Hour12;
+            if (x == "d1" || x == "daily" || x == "day") return TimeFrame.Daily;
 
-            if (start <= end)
-                return t >= start && t <= end;
-
-            return t >= start || t <= end;
+            return TimeFrame.Daily;
         }
 
-        private bool IndicatorsReady()
+        private bool IsMode(string source, string value)
         {
-            return Bars.Count > Math.Max(ZScorePeriod + 5, AtrPeriod + 5);
-        }
-
-        private bool SafetyOk()
-        {
-            if (!UseSpreadFilter) return true;
-
-            double spreadPoints = Symbol.Ask - Symbol.Bid;
-            bool ok = spreadPoints <= MaxSpreadPoints;
-
-            if (!ok && LogSkipReasons)
-                Log($"SKIP — spread {spreadPoints:F3} pts > max {MaxSpreadPoints:F3}");
-
-            return ok;
-        }
-
-        private bool PassesDayFilter(DateTime london)
-        {
-            if (!UseDayFilter) return true;
-
-            switch (london.DayOfWeek)
-            {
-                case DayOfWeek.Monday: return TradeMonday;
-                case DayOfWeek.Tuesday: return TradeTuesday;
-                case DayOfWeek.Wednesday: return TradeWednesday;
-                case DayOfWeek.Thursday: return TradeThursday;
-                case DayOfWeek.Friday: return TradeFriday;
-                default: return false;
-            }
-        }
-
-        private bool HasOpenPosition()
-        {
-            return Positions.Any(p => p.SymbolName == SymbolName && p.Label == BotLabel);
+            return source != null && source.Equals(value, StringComparison.OrdinalIgnoreCase);
         }
 
         private void OnPositionClosed(PositionClosedEventArgs args)
@@ -661,7 +862,8 @@ namespace cAlgo.Robots
         {
             _gateDirection = 0;
             _gateBarsRemaining = 0;
-            _gateTargetPrice = 0;
+            _gateSmaTp = 0;
+            _gateTpDistance = 0;
             _gateSLDistance = 0;
             _gateZScore = 0;
             _gateTime = DateTime.MinValue;
@@ -670,6 +872,12 @@ namespace cAlgo.Robots
         private void Log(string msg)
         {
             if (VerboseLogging)
+                Print(msg);
+        }
+
+        private void Skip(string msg)
+        {
+            if (VerboseLogging && LogSkipReasons)
                 Print(msg);
         }
     }
