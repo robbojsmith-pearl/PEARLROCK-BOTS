@@ -1,0 +1,37 @@
+{
+  "Chart": {
+    "Symbol": "EURGBP",
+    "Period": "m5"
+  },
+  "Parameters": {
+    "BotLabel": "WEEKLY_MR_V2_EURGBP_L",
+    "DeviationAtrMult": 2.0,
+    "D1AtrPeriod": 14,
+    "ConfirmationBars": 2,
+    "ResetBufferPips": 2.0,
+    "RiskPercent": 0.5,
+    "M5AtrPeriod": 14,
+    "SlAtrMultiple": 2.0,
+    "TpBufferPips": 5.0,
+    "MaxTradeHours": 48,
+    "MaxSlPips": 0.0,
+    "MinTpToSlRatio": 0.5,
+    "TpFraction": 0.5,
+    "AllowLongs": true,
+    "AllowShorts": false,
+    "TradeStart": "00:00",
+    "TradeEnd": "23:59",
+    "MaxTradesPerWeek": 3,
+    "CooldownMinutes": 60,
+    "UseDayFilter": true,
+    "TradeMonday": false,
+    "TradeTuesday": true,
+    "TradeWednesday": true,
+    "TradeThursday": false,
+    "TradeFriday": false,
+    "UseSpreadFilter": true,
+    "MaxSpread": 0.00015,
+    "WeeklyLossLimitPct": 3.0,
+    "VerboseLogging": false
+  }
+}
