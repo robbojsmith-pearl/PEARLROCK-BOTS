@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    cAlgo cBot project for Weekly Mean Reversion v2.
+
+    cTrader Automate generates its own .csproj when you import a cBot.
+    This file is here so the test project can reference Core via linked files
+    and so the project compiles outside cTrader for code review.
+
+    If cTrader Automate complains, delete this and let it regenerate.
+    The Core/ and Adapters/ folders will be picked up via the SDK-style
+    wildcard <Compile Include="**/*.cs" />.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <RootNamespace>PearlrockBots.WeeklyMeanReversion</RootNamespace>
+    <AssemblyName>Weekly Mean Reversion v2</AssemblyName>
+    <OutputType>Library</OutputType>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <!--
+    cAlgo API package. Exact version depends on your cTrader install.
+    cTrader's own project generator will set this correctly; if you build
+    from VS without cTrader, you may need to adjust.
+  -->
+  <ItemGroup>
+    <PackageReference Include="cTrader-Automate" Version="*" Condition="false" />
+  </ItemGroup>
+
+</Project>
