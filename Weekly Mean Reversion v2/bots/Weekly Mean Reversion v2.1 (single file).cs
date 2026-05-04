@@ -408,6 +408,77 @@ namespace PearlrockBots.WeeklyMeanReversion.V21.Core
         public double MinTpToSlRatio { get; set; } = 0.5;
         public double TpFraction { get; set; } = 1.0;
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Custom optimizer fitness — hard-rejects under-trading curve-fits at the
+    // optimizer level so the results grid is pre-filtered.
+    //
+    // Reject if:
+    //   total trades < MinTotalTrades, or
+    //   trades / year < MinTradesPerYear, or
+    //   net profit ≤ 0, or
+    //   max equity DD% > MaxDrawdownPct
+    //
+    // Otherwise:
+    //   score = (log10(1 + net) × min(PF, PfCap) × √trades × winRate²) / DD%^1.5
+    //
+    // PF capped at PfCap (default 3.0) so absurd PFs from overfit setups don't
+    // dominate the score.
+    // ─────────────────────────────────────────────────────────────────────────
+    public static class Fitness
+    {
+        public static double Compute(FitnessInput x, FitnessConfig cfg)
+        {
+            if (cfg == null) throw new ArgumentNullException(nameof(cfg));
+            double years = x.BacktestYears > 0 ? x.BacktestYears : 1;
+            double tradesPerYear = x.TotalTrades / years;
+            double winRate = x.TotalTrades > 0 ? x.WinningTrades / x.TotalTrades : 0;
+            double ddPct = Math.Max(x.MaxEquityDrawdownPct, 0.01);
+            double pf = Math.Min(x.ProfitFactor, cfg.PfCap);
+
+            if (x.TotalTrades < cfg.MinTotalTrades) return cfg.RejectionScore;
+            if (tradesPerYear < cfg.MinTradesPerYear) return cfg.RejectionScore;
+            if (x.NetProfit <= 0) return cfg.RejectionScore;
+            if (ddPct > cfg.MaxDrawdownPct) return cfg.RejectionScore;
+
+            double profitScore = Math.Log10(1.0 + x.NetProfit);
+            double tradeScore = Math.Sqrt(x.TotalTrades);
+            double ddPenalty = Math.Pow(ddPct, 1.5);
+            double winBonus = Math.Pow(winRate, 2);
+
+            return (profitScore * pf * tradeScore * winBonus) / ddPenalty;
+        }
+    }
+
+    public readonly struct FitnessInput
+    {
+        public double TotalTrades { get; }
+        public double WinningTrades { get; }
+        public double NetProfit { get; }
+        public double MaxEquityDrawdownPct { get; }
+        public double ProfitFactor { get; }
+        public double BacktestYears { get; }
+
+        public FitnessInput(double totalTrades, double winningTrades, double netProfit,
+                            double maxEquityDrawdownPct, double profitFactor, double backtestYears)
+        {
+            TotalTrades = totalTrades;
+            WinningTrades = winningTrades;
+            NetProfit = netProfit;
+            MaxEquityDrawdownPct = maxEquityDrawdownPct;
+            ProfitFactor = profitFactor;
+            BacktestYears = backtestYears;
+        }
+    }
+
+    public class FitnessConfig
+    {
+        public int MinTotalTrades { get; set; } = 40;
+        public double MinTradesPerYear { get; set; } = 6;
+        public double MaxDrawdownPct { get; set; } = 20.0;
+        public double PfCap { get; set; } = 3.0;
+        public double RejectionScore { get; set; } = -1_000_000;
+    }
 }
 
 namespace PearlrockBots.WeeklyMeanReversion.V21.Adapters
@@ -532,6 +603,18 @@ namespace cAlgo.Robots
         public double MaxSpread { get; set; }
         [Parameter("Weekly Loss Limit % (0=off)", DefaultValue = 3.0, MinValue = 0, Step = 0.1, Group = "Safety")]
         public double WeeklyLossLimitPct { get; set; }
+
+        // Fitness (custom optimizer scoring)
+        [Parameter("Min Total Trades", DefaultValue = 40, MinValue = 1, Group = "Fitness")]
+        public int MinTotalTrades { get; set; }
+        [Parameter("Min Trades Per Year", DefaultValue = 6.0, MinValue = 0.5, Step = 0.5, Group = "Fitness")]
+        public double MinTradesPerYear { get; set; }
+        [Parameter("Max Fitness DD %", DefaultValue = 20.0, MinValue = 1.0, Step = 0.5, Group = "Fitness")]
+        public double MaxFitnessDrawdownPct { get; set; }
+        [Parameter("Backtest Years", DefaultValue = 8.0, MinValue = 0.5, Step = 0.5, Group = "Fitness")]
+        public double BacktestYears { get; set; }
+        [Parameter("Fitness PF Cap", DefaultValue = 3.0, MinValue = 1.0, Step = 0.1, Group = "Fitness")]
+        public double FitnessPfCap { get; set; }
 
         // Logging
         [Parameter("Verbose Logging", DefaultValue = true, Group = "Logging")]
@@ -720,5 +803,25 @@ namespace cAlgo.Robots
         }
 
         private void Log(string msg) { if (VerboseLogging) Print(msg); }
+
+        // Custom optimizer fitness — see Fitness class for math.
+        protected override double GetFitness(GetFitnessArgs args)
+        {
+            return Fitness.Compute(
+                new FitnessInput(
+                    totalTrades:          args.TotalTrades,
+                    winningTrades:        args.WinningTrades,
+                    netProfit:            args.NetProfit,
+                    maxEquityDrawdownPct: args.MaxEquityDrawdownPercentages,
+                    profitFactor:         args.ProfitFactor,
+                    backtestYears:        BacktestYears),
+                new FitnessConfig
+                {
+                    MinTotalTrades   = MinTotalTrades,
+                    MinTradesPerYear = MinTradesPerYear,
+                    MaxDrawdownPct   = MaxFitnessDrawdownPct,
+                    PfCap            = FitnessPfCap
+                });
+        }
     }
 }

@@ -137,12 +137,66 @@ Either:
 - (b) **Multi-file project** in `project/` — open the `.sln` in cTrader Automate's
   IDE if you want to read or modify Core/Adapters separately.
 
-## Status
+## Status — SHELVED after walk-forward
 
 - [x] v2 architecture done, 37 tests green
 - [x] v2.1 (TpFraction) added, single-file builds shipped
+- [x] Custom `GetFitness` ported (rejects under-trading curve-fits at the optimizer level)
 - [x] Screening across 10 symbols complete
 - [x] Three asymmetric edges identified and documented
-- [ ] Optimization phase — XAU + GBP + EURGBP `.optset` files prepared, runs in progress
-- [ ] Walk-forward on each winning candidate (2024-01-01 → today)
-- [ ] Demo forward-test on best candidate(s)
+- [x] Optimization phase — XAU + GBP + EURGBP all run
+- [x] Walk-forward on each candidate (2024-01-01 → today)
+- [ ] ~~Demo forward-test~~ — **all three legs failed OOS; nothing deployed**
+
+## Post-mortem
+
+After completing optimisation and walk-forward (2024-01-01 → today, ~16-28 months OOS),
+all three asymmetric edges identified during screening have been **shelved**. The
+strategy is not deployable in the current market regime.
+
+### Final results
+
+| Leg | IS (2016-2024) | OOS verdict | Cause |
+|---|---|---|---|
+| XAUUSD shorts (TpFraction = 1.0) | PF 1.60, +$1,461, 23% wr, 13.3% DD | PF 0.79, -4%, 8% wr | Regime shift — gold's structural bid post-2024 (central bank flows, geopolitical premium) kills short-biased mean reversion. Both optimised candidates AND baseline failed identically, ruling out curve-fit. |
+| GBPUSD longs (TpFraction = 1.0) | PF 1.07, +$165, 16% wr, 15.9% DD | PF 0.0, 0 wins / 4 trades, -2% | Edge evaporated. Baseline produced no winners across 16 months OOS. |
+| EURGBP longs (TpFraction = 0.5) | PF 1.00, -$9, 27% wr, 7.6% DD | 2 trades / 28 months on optimised; baseline skipped | Always too sparse; optimisation narrowed entry conditions further into a setup that barely fires. |
+
+### What we learned
+
+1. **Mean reversion to a weekly anchor is regime-dependent.** It needs a two-sided
+   ranging market. Once one side is structurally bid (gold post-2024), short-biased
+   reversion gets crushed. The XAU baseline OOS PF of 0.79 confirmed this isn't a
+   curve-fitting issue — the underlying edge died with the regime.
+
+2. **Walk-forward is non-negotiable.** 8 years of clean IS data on three different
+   markets gave a PF range of 1.00-1.60 — looked like real edges. They weren't.
+   Without the OOS step, we'd have committed capital to losers.
+
+3. **Optimisation without a custom fitness invites overfit.** Both the GBPUSD and
+   EURGBP optimisation runs converged on under-trading combinations (4-5 trades/year,
+   16-33 trades over 8 years) that fail by definition: too few samples to validate,
+   too narrow a setup definition to recur. The custom `GetFitness` since added
+   (`MinTradesPerYear ≥ 6`, PF capped at 3.0) hard-rejects those candidates at the
+   optimiser level so the results grid is pre-filtered next time around.
+
+4. **For v3, every mean-reversion strategy needs a regime gate.** A simple D1
+   trend filter (skip shorts when price > D1 200-SMA + N×ATR; skip longs in the
+   inverse) would have saved the XAU leg in the OOS window. This is the single
+   most important unlearned lesson from v2.
+
+### What survived
+
+- **The codebase.** v2's Core / Adapters / cBot architecture, the xUnit suite
+  (49 tests including the new Fitness ones), `TpFraction`, and the custom
+  `GetFitness` filter all carry forward to whatever strategy comes next.
+- **The methodology.** Default screening → diagnostic A/B/D → optimisation with
+  custom fitness → walk-forward IS *and* baseline → ship or shelve. Repeatable
+  in a few days for the next idea.
+- **No live capital was at risk.** The entire exercise was backtest +
+  optimisation + walk-forward. The bot was never deployed. That's the
+  walk-forward step paying for itself in this single cycle.
+
+The v2.1 cBot remains importable in cTrader. If the gold regime ever shifts back
+to two-sided ranging, or if a future test on different symbols/timeframes shows
+promise, this folder is the starting point — not a redesign.
