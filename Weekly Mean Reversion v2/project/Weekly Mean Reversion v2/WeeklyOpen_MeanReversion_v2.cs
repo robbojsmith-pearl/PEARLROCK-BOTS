@@ -115,6 +115,22 @@ namespace cAlgo.Robots
         [Parameter("Weekly Loss Limit % (0=off)", DefaultValue = 2.0, MinValue = 0, Step = 0.1, Group = "Safety")]
         public double WeeklyLossLimitPct { get; set; }
 
+        // ── Fitness (custom optimizer scoring) ────────────────────────
+        [Parameter("Min Total Trades", DefaultValue = 40, MinValue = 1, Group = "Fitness")]
+        public int MinTotalTrades { get; set; }
+
+        [Parameter("Min Trades Per Year", DefaultValue = 6.0, MinValue = 0.5, Step = 0.5, Group = "Fitness")]
+        public double MinTradesPerYear { get; set; }
+
+        [Parameter("Max Fitness DD %", DefaultValue = 20.0, MinValue = 1.0, Step = 0.5, Group = "Fitness")]
+        public double MaxFitnessDrawdownPct { get; set; }
+
+        [Parameter("Backtest Years", DefaultValue = 8.0, MinValue = 0.5, Step = 0.5, Group = "Fitness")]
+        public double BacktestYears { get; set; }
+
+        [Parameter("Fitness PF Cap", DefaultValue = 3.0, MinValue = 1.0, Step = 0.1, Group = "Fitness")]
+        public double FitnessPfCap { get; set; }
+
         // ── Logging ───────────────────────────────────────────────────
         [Parameter("Verbose Logging", DefaultValue = true, Group = "Logging")]
         public bool VerboseLogging { get; set; }
@@ -357,7 +373,28 @@ namespace cAlgo.Robots
             if (VerboseLogging) Print(msg);
         }
 
-        // Note: GetFitness omitted for brevity — port from v1 if you use the optimizer.
-        // Keep it on the cBot side so Robot.GetFitnessArgs is reachable.
+        // ─────────────────────────────────────────────────────────────
+        // Custom optimizer fitness — hard-rejects under-trading curve-fits
+        // so the optimizer's results grid is pre-filtered.
+        // Math lives in Core/Fitness.cs (testable).
+        // ─────────────────────────────────────────────────────────────
+        protected override double GetFitness(GetFitnessArgs args)
+        {
+            return Fitness.Compute(
+                new FitnessInput(
+                    totalTrades:          args.TotalTrades,
+                    winningTrades:        args.WinningTrades,
+                    netProfit:            args.NetProfit,
+                    maxEquityDrawdownPct: args.MaxEquityDrawdownPercentages,
+                    profitFactor:         args.ProfitFactor,
+                    backtestYears:        BacktestYears),
+                new FitnessConfig
+                {
+                    MinTotalTrades   = MinTotalTrades,
+                    MinTradesPerYear = MinTradesPerYear,
+                    MaxDrawdownPct   = MaxFitnessDrawdownPct,
+                    PfCap            = FitnessPfCap
+                });
+        }
     }
 }
