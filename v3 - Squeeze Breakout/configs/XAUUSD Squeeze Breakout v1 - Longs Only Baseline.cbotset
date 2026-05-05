@@ -1,0 +1,54 @@
+{
+  "Chart": {
+    "Symbol": "XAUUSD",
+    "Period": "h1"
+  },
+  "Parameters": {
+    "BotLabel": "XAU_SQZ_V1_L",
+
+    "BBPeriod": 20,
+    "BBStdDev": 2.0,
+    "KCPeriod": 20,
+    "KCMultiplier": 1.5,
+
+    "TrendSmaPeriod": 200,
+
+    "MomentumWindow": 20,
+    "MomentumFadeRatio": 0.5,
+
+    "AtrPeriod": 14,
+    "SlAtrMultiple": 3.0,
+    "TpAtrMultiple": 6.0,
+    "TrailAtrMultiple": 3.0,
+    "RiskPercent": 0.5,
+    "MaxLeverage": 10.0,
+    "LeverageBuffer": 0.2,
+
+    "AllowLongs": true,
+    "AllowShorts": false,
+
+    "TradeStart": "00:00",
+    "TradeEnd": "23:59",
+    "MaxTradeHours": 0,
+    "CooldownMinutes": 0,
+
+    "UseDayFilter": false,
+    "TradeMonday": true,
+    "TradeTuesday": true,
+    "TradeWednesday": true,
+    "TradeThursday": true,
+    "TradeFriday": true,
+
+    "UseSpreadFilter": false,
+    "MaxSpread": 0.5,
+
+    "MinTotalTrades": 40,
+    "MinTradesPerYear": 6.0,
+    "MaxFitnessDrawdownPct": 30.0,
+    "BacktestYears": 14.0,
+    "FitnessPfCap": 3.0,
+    "MinAverageTradeProfit": 10.0,
+
+    "VerboseLogging": false
+  }
+}
