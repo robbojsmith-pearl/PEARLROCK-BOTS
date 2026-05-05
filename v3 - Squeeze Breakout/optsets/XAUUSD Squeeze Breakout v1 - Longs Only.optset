@@ -1,0 +1,69 @@
+{
+  "Chart": {
+    "Symbol": "XAUUSD",
+    "Period": "h1"
+  },
+  "Backtesting": {
+    "From": "2010-01-01T00:00:00",
+    "To": "2024-01-01T00:00:00",
+    "DataSource": "Bar",
+    "Spread": "Real",
+    "Commission": "Real",
+    "Capital": 10000,
+    "Currency": "USD"
+  },
+  "Optimization": {
+    "Algorithm": "Genetic",
+    "Generations": 30,
+    "Population": 50,
+    "FitnessCriteria": "Custom"
+  },
+  "Parameters": {
+    "BotLabel": "XAU_SQZ_V1_L",
+
+    "BBPeriod": 20,
+    "BBStdDev": 2.0,
+    "KCPeriod": 20,
+    "KCMultiplier": { "Min": 1.0, "Max": 2.5, "Step": 0.25 },
+
+    "TrendSmaPeriod": { "Min": 100, "Max": 400, "Step": 50 },
+
+    "MomentumWindow": 20,
+    "MomentumFadeRatio": { "Min": 0.3, "Max": 0.7, "Step": 0.1 },
+
+    "AtrPeriod": 14,
+    "SlAtrMultiple": { "Min": 2.0, "Max": 4.0, "Step": 0.5 },
+    "TpAtrMultiple": { "Min": 4.0, "Max": 10.0, "Step": 1.0 },
+    "TrailAtrMultiple": { "Min": 2.0, "Max": 4.0, "Step": 0.5 },
+    "RiskPercent": 0.5,
+    "MaxLeverage": 10.0,
+    "LeverageBuffer": 0.2,
+
+    "AllowLongs": true,
+    "AllowShorts": false,
+
+    "TradeStart": "00:00",
+    "TradeEnd": "23:59",
+    "MaxTradeHours": 0,
+    "CooldownMinutes": 0,
+
+    "UseDayFilter": false,
+    "TradeMonday": true,
+    "TradeTuesday": true,
+    "TradeWednesday": true,
+    "TradeThursday": true,
+    "TradeFriday": true,
+
+    "UseSpreadFilter": false,
+    "MaxSpread": 0.5,
+
+    "MinTotalTrades": 40,
+    "MinTradesPerYear": 6.0,
+    "MaxFitnessDrawdownPct": 30.0,
+    "BacktestYears": 14.0,
+    "FitnessPfCap": 3.0,
+    "MinAverageTradeProfit": 10.0,
+
+    "VerboseLogging": false
+  }
+}
