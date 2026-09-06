@@ -1,0 +1,159 @@
+#!/usr/bin/expect -f
+# Drives the ctrader-cli interactive "backtest" wizard explicitly for one fold,
+# since --start/--end/etc CLI flags are silently ignored on this CLI build (v5.9.0.3).
+# Usage: run_fold.exp <fold_label> <start_date yyyy-MM-dd> <end_date yyyy-MM-dd> <json_out_path>
+
+set fold_label [lindex $argv 0]
+set start_date [lindex $argv 1]
+set end_date   [lindex $argv 2]
+set json_out   [lindex $argv 3]
+
+set timeout 20
+log_user 1
+
+spawn ctrader-cli --ctid=robbojsmith@me.com --pwd-file=$env(HOME)/.ctrader-cli/pwd.txt --account=2219914
+
+expect "> "
+send "backtest\r"
+expect "Algo file"
+send "$env(HOME)/PEARLROCK-BOTS-REPO/XAUUSD_SqueezeBreakout_v1.algo\r"
+expect "Symbol"
+send "XAUUSD\r"
+expect "Timeframe"
+send "h1\r"
+expect "Start date"
+send "$start_date\r"
+expect "End date"
+send "$end_date\r"
+expect "Starting balance"
+send "10000\r"
+expect "Data mode"
+send "m1\r"
+expect "Commission"
+send "\r"
+expect "Spread"
+send "\r"
+expect "HTML report"
+send "\r"
+expect "JSON report"
+send "$json_out\r"
+expect "Use default parameters"
+send "no\r"
+expect "Bot Label"
+send "XAU_SQZ_V1\r"
+expect "BB Period"
+send "24\r"
+expect "BB StdDev"
+send "1.5\r"
+expect "KC Period"
+send "24\r"
+expect "KC Multiplier"
+send "1.9\r"
+expect "Trend SMA Period"
+send "200\r"
+expect "Momentum Window"
+send "20\r"
+expect "Momentum Fade Ratio"
+send "0.7\r"
+expect "ATR Period"
+send "20\r"
+expect "SL ATR Multiple"
+send "2.0\r"
+expect "TP ATR Multiple"
+send "5.0\r"
+expect "Trail ATR Multiple"
+send "3.6\r"
+expect "Risk % per Trade"
+send "1.0\r"
+expect "Max Leverage"
+send "10.0\r"
+expect "Leverage Buffer"
+send "0.2\r"
+expect "Allow Longs"
+send "true\r"
+expect "Allow Shorts"
+send "true\r"
+expect "Trade Start"
+send "\r"
+expect "Trade End"
+send "\r"
+expect "Max Trade Duration"
+send "\r"
+expect "Cooldown Minutes"
+send "\r"
+expect "Use Day Filter"
+send "false\r"
+expect "Trade Monday"
+send "\r"
+expect "Trade Tuesday"
+send "\r"
+expect "Trade Wednesday"
+send "\r"
+expect "Trade Thursday"
+send "\r"
+expect "Trade Friday"
+send "\r"
+expect "Use Spread Filter"
+send "false\r"
+expect "Max Spread"
+send "\r"
+expect "Min Total Trades"
+send "10\r"
+expect "Min Trades Per Year"
+send "6.0\r"
+expect "Max Fitness DD"
+send "30.0\r"
+expect "Backtest Years"
+send "\r"
+expect "Fitness PF Cap"
+send "3.0\r"
+expect "Min Average Trade"
+send "10.0\r"
+expect "Verbose Logging"
+send "\r"
+
+expect "Collected parameters"
+puts "\n=== FOLD $fold_label: Collected-parameters echo received ==="
+
+expect {
+    -re {Backtest ([0-9a-fA-F]+) started} {
+        puts "=== FOLD $fold_label: job $expect_out(1,string) started in background ==="
+    }
+    timeout {
+        puts "=== FOLD $fold_label: WARNING - did not see 'started in background' message ==="
+    }
+}
+
+expect "> "
+
+# Poll natively (no external exec) for the JSON report file to appear and
+# stabilize in size, rather than trusting a fixed sleep or the CLI's own
+# "running instance" bookkeeping (Ctrl+C would stop still-running jobs).
+set stable_count 0
+set last_size -1
+for {set i 0} {$i < 90} {incr i} {
+    after 2000
+    if {[file exists $json_out]} {
+        set sz [file size $json_out]
+        if {$sz == $last_size && $sz > 0} {
+            incr stable_count
+        } else {
+            set stable_count 0
+        }
+        set last_size $sz
+        if {$stable_count >= 2} {
+            puts "=== FOLD $fold_label: report file stable at $sz bytes after [expr {($i+1)*2}]s ==="
+            break
+        }
+    }
+}
+if {$stable_count < 2} {
+    puts "=== FOLD $fold_label: WARNING - report file never stabilized within poll window ==="
+}
+
+send "quit\r"
+expect {
+    "Confirm? (yes/no):" { send "yes\r"; exp_continue }
+    eof { }
+    timeout { }
+}
