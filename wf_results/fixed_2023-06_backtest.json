@@ -1,0 +1,433 @@
+{
+  "main": {
+    "utcOffset": 0,
+    "language": "en",
+    "depositAsset": "USD",
+    "depositAssetDigits": 2,
+    "period": "h1",
+    "symbol": "XAUUSD",
+    "brokerTitle": "",
+    "cBotName": "XAUUSD_SqueezeBreakout_v1",
+    "roi": -1.6,
+    "netProfit": -160.34,
+    "startingCapital": 10000,
+    "endingEquity": 9839.66,
+    "endingBalance": 9839.66,
+    "testingPeriod": {
+      "duration": "1m",
+      "startDate": 1685577600000,
+      "endDate": 1688169600000,
+      "formatted": "1m (01/06/2023 - 01/07/2023)"
+    },
+    "accountType": "hedging",
+    "accountLeverage": 1000,
+    "data": {
+      "type": "m1BarsFromServer",
+      "isCustom": false,
+      "customName": null
+    },
+    "spread": {
+      "type": "fixed",
+      "min": null,
+      "max": null,
+      "value": 0
+    },
+    "commissions": {
+      "type": "usdPerMillionUsdVolume",
+      "value": 0,
+      "applyCommissionAutomatically": false
+    },
+    "theme": "dark",
+    "titleKind": "backtesting",
+    "authorNickName": "ctid6071021",
+    "authorLink": null,
+    "cBotLink": null,
+    "embedded": false
+  },
+  "equity": {
+    "points": [
+      {
+        "balance": 10000,
+        "minEquity": 10000,
+        "maxEquity": 10000,
+        "timestamp": 1685577600000
+      },
+      {
+        "balance": 10009.86,
+        "minEquity": 9962.06,
+        "maxEquity": 10050.66,
+        "timestamp": 1686056400000
+      },
+      {
+        "balance": 9977.25,
+        "minEquity": 9953.150000000001,
+        "maxEquity": 10031.560000000001,
+        "timestamp": 1686222000000
+      },
+      {
+        "balance": 9908.65,
+        "minEquity": 9895.65,
+        "maxEquity": 10002.05,
+        "timestamp": 1686733200000
+      },
+      {
+        "balance": 9808.85,
+        "minEquity": 9820.15,
+        "maxEquity": 9996.949999999999,
+        "timestamp": 1686836520000
+      },
+      {
+        "balance": 9846.17,
+        "minEquity": 9762.53,
+        "maxEquity": 9994.85,
+        "timestamp": 1687363200000
+      },
+      {
+        "balance": 9802.94,
+        "minEquity": 9776.65,
+        "maxEquity": 9883.02,
+        "timestamp": 1687510800000
+      },
+      {
+        "balance": 9839.66,
+        "minEquity": 9782.9,
+        "maxEquity": 9944.78,
+        "timestamp": 1687978800000
+      },
+      {
+        "balance": 9839.66,
+        "minEquity": 9839.66,
+        "maxEquity": 9844.58,
+        "timestamp": 1688158560000
+      }
+    ],
+    "maxBalanceDrawdownPercent": 2.0671617784864127,
+    "maxEquityDrawdownPercent": 2.8667769081831365,
+    "maxBalanceDrawdownAbsolute": 206.92000000000007,
+    "maxEquityDrawdownAbsolute": 288.1299999999992
+  },
+  "tradeStatistics": {
+    "netProfit": {
+      "all": -160.34,
+      "long": 9.86,
+      "short": -170.2
+    },
+    "profitFactor": {
+      "all": 0.34,
+      "long": 0,
+      "short": 0.3
+    },
+    "commissions": {
+      "all": 0,
+      "long": 0,
+      "short": 0
+    },
+    "swaps": {
+      "all": 24.9,
+      "long": -5.84,
+      "short": 30.74
+    },
+    "totalTrades": {
+      "all": 7,
+      "long": 1,
+      "short": 6
+    },
+    "winningTrades": {
+      "all": 3,
+      "long": 1,
+      "short": 2
+    },
+    "maxConsecutiveWinningTrades": {
+      "all": 1,
+      "long": 1,
+      "short": 1
+    },
+    "largestWinningTrade": {
+      "all": 37.32,
+      "long": 9.86,
+      "short": 37.32
+    },
+    "losingTrades": {
+      "all": 4,
+      "long": 0,
+      "short": 4
+    },
+    "maxConsecutiveLosingTrades": {
+      "all": 3,
+      "long": 0,
+      "short": 3
+    },
+    "largestLosingTrade": {
+      "all": -99.8,
+      "long": 0,
+      "short": -99.8
+    },
+    "averageTrade": {
+      "all": -22.91,
+      "long": 9.86,
+      "short": -28.37
+    }
+  },
+  "usedSymbols": [
+    {
+      "symbol": "XAUUSD",
+      "period": "h1",
+      "swapTime": "21:00",
+      "baseAsset": "XAU",
+      "baseAssetDigits": 2,
+      "quoteAsset": "USD",
+      "quoteAssetDigits": 2,
+      "commissions": {
+        "type": "usdPerMillionUsdVolume",
+        "value": 0,
+        "applyCommissionAutomatically": false
+      },
+      "swapLong": -58.42,
+      "swapShort": 40.98,
+      "threeDaySwaps": "wednesday",
+      "weekendSwaps": false,
+      "swapPeriods": 24,
+      "gracePeriods": 0,
+      "digits": 2,
+      "lotSize": 100,
+      "stepVolume": 1,
+      "pipPosition": 2,
+      "swapCalculationType": "pips"
+    }
+  ],
+  "positions": {
+    "columns": [
+      "id",
+      "symbol",
+      "quantity",
+      "volume",
+      "direction",
+      "entryPrice",
+      "tp",
+      "sl",
+      "commissions",
+      "closingCommissions",
+      "created",
+      "label",
+      "comment",
+      "pips",
+      "net",
+      "gross",
+      "swaps"
+    ],
+    "items": [],
+    "marginUsed": 0,
+    "freeMargin": 9839.66,
+    "marginLevel": null,
+    "unrealizedNet": 0,
+    "unrealizedGross": 0
+  },
+  "orders": {
+    "columns": [
+      "id",
+      "symbol",
+      "direction",
+      "created",
+      "quantity",
+      "volume",
+      "orderType",
+      "submittedPrice",
+      "distance",
+      "tp",
+      "sl",
+      "expiryDate",
+      "currentPrice",
+      "limitRange",
+      "comment",
+      "label"
+    ],
+    "items": []
+  },
+  "history": {
+    "columns": [
+      "id",
+      "symbol",
+      "direction",
+      "net",
+      "gross",
+      "entryTime",
+      "closeTime",
+      "entryPrice",
+      "closePrice",
+      "swaps",
+      "commissions",
+      "volume",
+      "label",
+      "comment",
+      "quantity",
+      "pips",
+      "balanceDrawdownAbsolute",
+      "balanceDrawdownPercent",
+      "equityDrawdownAbsolute",
+      "equityDrawdownPercent"
+    ],
+    "items": [
+      {
+        "symbol": "XAUUSD",
+        "direction": "buy",
+        "id": 2,
+        "net": 9.86,
+        "gross": 15.7,
+        "entryTime": 1685988000000,
+        "closeTime": 1686056400000,
+        "entryPrice": 1960.31,
+        "closePrice": 1961.88,
+        "commissions": 0,
+        "swaps": -5.84,
+        "volume": 10,
+        "label": "XAU_SQZ_V1",
+        "comment": null,
+        "balance": 10009.86,
+        "quantity": 0.1,
+        "pips": 157,
+        "balanceDrawdownPercent": 0,
+        "equityDrawdownPercent": 0.7337804039578827,
+        "balanceDrawdownAbsolute": 0,
+        "equityDrawdownAbsolute": 73.64000000000124
+      },
+      {
+        "symbol": "XAUUSD",
+        "direction": "sell",
+        "id": 4,
+        "net": -32.61,
+        "gross": -44.9,
+        "entryTime": 1686157200000,
+        "closeTime": 1686222000000,
+        "entryPrice": 1942.19,
+        "closePrice": 1946.68,
+        "commissions": 0,
+        "swaps": 12.29,
+        "volume": 10,
+        "label": "XAU_SQZ_V1",
+        "comment": null,
+        "balance": 9977.25,
+        "quantity": 0.1,
+        "pips": -449,
+        "balanceDrawdownPercent": 0,
+        "equityDrawdownPercent": 0.9701850425743026,
+        "balanceDrawdownAbsolute": 0,
+        "equityDrawdownAbsolute": 97.5099999999984
+      },
+      {
+        "symbol": "XAUUSD",
+        "direction": "sell",
+        "id": 6,
+        "net": -68.60000000000001,
+        "gross": -72.7,
+        "entryTime": 1686679200000,
+        "closeTime": 1686733200000,
+        "entryPrice": 1942.61,
+        "closePrice": 1949.88,
+        "commissions": 0,
+        "swaps": 4.1,
+        "volume": 10,
+        "label": "XAU_SQZ_V1",
+        "comment": null,
+        "balance": 9908.65,
+        "quantity": 0.1,
+        "pips": -726.9999999999999,
+        "balanceDrawdownPercent": 0.32577878212083483,
+        "equityDrawdownPercent": 1.542286775196855,
+        "balanceDrawdownAbsolute": 32.61000000000058,
+        "equityDrawdownAbsolute": 155.01000000000022
+      },
+      {
+        "symbol": "XAUUSD",
+        "direction": "sell",
+        "id": 8,
+        "net": -99.8,
+        "gross": -99.8,
+        "entryTime": 1686798000000,
+        "closeTime": 1686836520000,
+        "entryPrice": 1935.2,
+        "closePrice": 1945.18,
+        "commissions": 0,
+        "swaps": 0,
+        "volume": 10,
+        "label": "XAU_SQZ_V1",
+        "comment": null,
+        "balance": 9808.85,
+        "quantity": 0.1,
+        "pips": -998,
+        "balanceDrawdownPercent": 1.011103052390353,
+        "equityDrawdownPercent": 2.2934812241186173,
+        "balanceDrawdownAbsolute": 101.21000000000095,
+        "equityDrawdownAbsolute": 230.51000000000022
+      },
+      {
+        "symbol": "XAUUSD",
+        "direction": "sell",
+        "id": 10,
+        "net": 37.32,
+        "gross": 32.4,
+        "entryTime": 1687273200000,
+        "closeTime": 1687363200000,
+        "entryPrice": 1934.97,
+        "closePrice": 1932.27,
+        "commissions": 0,
+        "swaps": 4.92,
+        "volume": 12,
+        "label": "XAU_SQZ_V1",
+        "comment": null,
+        "balance": 9846.17,
+        "quantity": 0.12,
+        "pips": 270,
+        "balanceDrawdownPercent": 2.0081199936862255,
+        "equityDrawdownPercent": 2.8667769081831365,
+        "balanceDrawdownAbsolute": 201.01000000000022,
+        "equityDrawdownAbsolute": 288.1299999999992
+      },
+      {
+        "symbol": "XAUUSD",
+        "direction": "sell",
+        "id": 12,
+        "net": -43.230000000000004,
+        "gross": -47.74,
+        "entryTime": 1687449600000,
+        "closeTime": 1687510800000,
+        "entryPrice": 1913.36,
+        "closePrice": 1917.7,
+        "commissions": 0,
+        "swaps": 4.51,
+        "volume": 11,
+        "label": "XAU_SQZ_V1",
+        "comment": null,
+        "balance": 9802.94,
+        "quantity": 0.11,
+        "pips": -434,
+        "balanceDrawdownPercent": 1.6352876064200699,
+        "equityDrawdownPercent": 2.726288621841752,
+        "balanceDrawdownAbsolute": 163.6900000000005,
+        "equityDrawdownAbsolute": 274.0100000000002
+      },
+      {
+        "symbol": "XAUUSD",
+        "direction": "sell",
+        "id": 14,
+        "net": 36.72,
+        "gross": 31.8,
+        "entryTime": 1687892400000,
+        "closeTime": 1687978800000,
+        "entryPrice": 1914.8,
+        "closePrice": 1912.15,
+        "commissions": 0,
+        "swaps": 4.92,
+        "volume": 12,
+        "label": "XAU_SQZ_V1",
+        "comment": null,
+        "balance": 9839.66,
+        "quantity": 0.12,
+        "pips": 265,
+        "balanceDrawdownPercent": 2.0671617784864127,
+        "equityDrawdownPercent": 2.66410365090452,
+        "balanceDrawdownAbsolute": 206.92000000000007,
+        "equityDrawdownAbsolute": 267.7600000000002
+      }
+    ]
+  }
+}

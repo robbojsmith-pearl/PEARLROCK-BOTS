@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <RootNamespace>PearlrockBots.TrendFollow</RootNamespace>
+    <AssemblyName>XAU_TREND_V1</AssemblyName>
+    <OutputType>Library</OutputType>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <!--
+    cTrader Automate generates its own .csproj when you import a cBot.
+    This file allows the multi-file project to compile outside cTrader for
+    code review and so a future test project can link Core/*.cs.
+  -->
+  <ItemGroup>
+    <PackageReference Include="cTrader-Automate" Version="*" Condition="false" />
+  </ItemGroup>
+
+</Project>
